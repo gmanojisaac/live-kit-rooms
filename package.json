@@ -1,12 +1,14 @@
 {
   "name": "livekit-collaborative-room",
-  "version": "0.1.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "concurrently -k \"node server.js\" \"vite --host 127.0.0.1\"",
     "build": "vite build",
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test tests/server.test.js",
+    "test:browser": "npm run build && playwright test"
   },
   "dependencies": {
     "@livekit/components-react": "^2.9.0",
@@ -19,6 +21,7 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.2",
     "vite": "^6.0.7"
