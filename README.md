@@ -9,6 +9,8 @@ The existing application now supports two people in the same `collaborative-deve
 - A separate server-signed token and random participant identity for every accepted join, even if both people enter the same name.
 - Camera, microphone, chat, and remote audio playback using LiveKit's existing controls.
 - Two simultaneous screen shares, displayed side by side. Click either screen to maximize it; select **Return to grid** to see both. If the focused share stops or its owner leaves, the grid returns automatically.
+- A shared **Collaborative Prompt** workspace: one draft per room, finalize immutable versions, and keep version history.
+- **Manual run recording**: after someone copies a finalized prompt into Cursor (or another tool) on their own computer and runs it themselves, they can record the result here with success/failure status, optional notes, and a JPEG. This application does **not** execute prompts, control Cursor, control terminals, or capture screens automatically. Run/JPEG history is stored in memory on the single app server and is **lost on server restart**.
 - **Copy Invitation Link** on the welcome page and inside the meeting. The link contains no access code, credentials, participant identity, or token. Share your existing code separately.
 - Two admitted participants, counting pending connections as occupied seats. The server serializes admissions, saves reservations in ignored `.data/admissions.json`, and configures LiveKit's room maximum as two. Leaving revokes the old Cloud token before freeing the seat.
 - Visible media-permission errors and a manual-copy fallback if clipboard access is denied.

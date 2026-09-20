@@ -80,7 +80,7 @@ function App() {
     <div className="room">
       <LiveKitRoom token={connection.token} serverUrl={connection.serverUrl} connect video={false} audio={false}
         onDisconnected={handleDisconnected} onError={handleConnectionError} data-lk-theme="default">
-        <Meeting />
+        <Meeting session={connection} />
       </LiveKitRoom>
       {error && <div role="alert" className="toast">{error}<button onClick={() => setError('')}>Dismiss</button></div>}
     </div>

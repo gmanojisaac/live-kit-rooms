@@ -5,8 +5,9 @@ import {
 } from '@livekit/components-react';
 import { Track } from 'livekit-client';
 import { Invitation } from './Invitation';
+import { PromptWorkspace } from './PromptWorkspace';
 
-export function Meeting() {
+export function Meeting({ session }) {
   const participants = useParticipants();
   const cameras = useTracks([{ source: Track.Source.Camera, withPlaceholder: true }]);
   const screens = useTracks([Track.Source.ScreenShare], { onlySubscribed: false });
@@ -61,6 +62,7 @@ export function Meeting() {
                 </div>
               )}
             </section>
+            <PromptWorkspace session={session} />
             <section className="camera-grid" aria-label="Participant cameras">
               {cameras.map(track => <ParticipantTile key={track.participant.identity} trackRef={track} />)}
             </section>
