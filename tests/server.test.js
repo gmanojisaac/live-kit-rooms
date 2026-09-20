@@ -2,10 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { TokenVerifier } from 'livekit-server-sdk';
 import {
-  createApp, MAX_PARTICIPANTS, RESERVATION_TTL_MS, ROOM_NAME,
+  createApp, MAX_PARTICIPANTS, RESERVATION_TTL_MS, ROOM_NAME, MAX_PROMPT_LENGTH, MAX_JPEG_BYTES,
   JOIN_RATE_LIMIT_MAX_FAILURES, JOIN_RATE_LIMIT_WINDOW_MS, createJoinRateLimiter, normalizeIp,
   createClientIpResolver, parseTrustedProxyIps,
 } from '../server/app.js';
+import { createPromptStore } from '../server/prompts.js';
+import { createRunStore } from '../server/runs.js';
 
 const config = {
   LIVEKIT_URL: 'wss://example.livekit.cloud',
@@ -13,6 +15,17 @@ const config = {
   LIVEKIT_API_SECRET: 'test-secret-only-for-automated-tests',
   ROOM_ACCESS_CODE: 'unchanged-test-access-code',
 };
+
+function sampleJpeg(extraBytes = 0) {
+  return Buffer.concat([Buffer.from([0xFF, 0xD8, 0xFF, 0xE0]), Buffer.alloc(extraBytes, 0x00)]);
+}
+
+function jpegPayload(buffer = sampleJpeg()) {
+  return {
+    contentType: 'image/jpeg',
+    jpegBase64: buffer.toString('base64'),
+  };
+}
 
 async function fixture(t, overrides = {}, settings = config, appOptions = {}) {
   const calls = [];
@@ -26,14 +39,51 @@ async function fixture(t, overrides = {}, settings = config, appOptions = {}) {
   const server = createApp({ config: settings, roomService: service, logger: { error() {} }, ...appOptions }).listen(0, '127.0.0.1');
   await new Promise(resolve => server.on('listening', resolve));
   t.after(() => new Promise(resolve => server.close(resolve)));
+  const base = 'http://127.0.0.1:' + server.address().port;
   const join = (body = { name: 'Same name', accessCode: config.ROOM_ACCESS_CODE }) => fetch(
-    'http://127.0.0.1:' + server.address().port + '/api/join',
+    base + '/api/join',
     { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) },
   );
-  const leave = (data) => fetch('http://127.0.0.1:' + server.address().port + '/api/leave', {
+  const leave = (data) => fetch(base + '/api/leave', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(data),
   });
-  return { join, leave, calls };
+  const promptHeaders = (seat) => ({
+    'content-type': 'application/json',
+    'x-participant-identity': seat.identity,
+    'x-leave-key': seat.leaveKey,
+  });
+  const getPrompt = (seat, room = seat.roomName) => fetch(
+    base + '/api/rooms/' + encodeURIComponent(room) + '/prompt',
+    { headers: promptHeaders(seat) },
+  );
+  const putPrompt = (seat, draft, room = seat.roomName) => fetch(
+    base + '/api/rooms/' + encodeURIComponent(room) + '/prompt',
+    { method: 'PUT', headers: promptHeaders(seat), body: JSON.stringify({ draft }) },
+  );
+  const finalizePrompt = (seat, room = seat.roomName) => fetch(
+    base + '/api/rooms/' + encodeURIComponent(room) + '/prompt/finalize',
+    { method: 'POST', headers: promptHeaders(seat), body: '{}' },
+  );
+  const listRuns = (seat, room = seat.roomName) => fetch(
+    base + '/api/rooms/' + encodeURIComponent(room) + '/runs',
+    { headers: promptHeaders(seat) },
+  );
+  const createRun = (seat, body, room = seat.roomName) => fetch(
+    base + '/api/rooms/' + encodeURIComponent(room) + '/runs',
+    { method: 'POST', headers: promptHeaders(seat), body: JSON.stringify(body) },
+  );
+  const getRun = (seat, runId, room = seat.roomName) => fetch(
+    base + '/api/rooms/' + encodeURIComponent(room) + '/runs/' + encodeURIComponent(runId),
+    { headers: promptHeaders(seat) },
+  );
+  const getRunImage = (seat, runId, room = seat.roomName) => fetch(
+    base + '/api/rooms/' + encodeURIComponent(room) + '/runs/' + encodeURIComponent(runId) + '/image',
+    { headers: promptHeaders(seat) },
+  );
+  return {
+    join, leave, calls, getPrompt, putPrompt, finalizePrompt,
+    listRuns, createRun, getRun, getRunImage, base,
+  };
 }
 
 test('same code and same display name produce separately signed identities in the same capped room', async t => {
@@ -439,4 +489,281 @@ test('distinct clients behind a trusted proxy have independent join rate limits'
   forwarded = '203.0.113.61';
   assert.equal((await join({ name: 'Guest', accessCode: 'wrong' })).status, 403);
   assert.equal((await join()).status, 200);
+});
+
+test('new room prompt starts empty and GET returns current state', async t => {
+  const { join, getPrompt } = await fixture(t);
+  const seat = await (await join()).json();
+  const response = await getPrompt(seat);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.deepEqual(await response.json(), {
+    draft: '',
+    version: 0,
+    status: 'draft',
+    versions: [],
+  });
+});
+
+test('PUT updates the shared draft and GET returns it', async t => {
+  const { join, getPrompt, putPrompt } = await fixture(t);
+  const seat = await (await join()).json();
+  const updated = await putPrompt(seat, 'Build a login form');
+  assert.equal(updated.status, 200);
+  assert.deepEqual(await updated.json(), {
+    draft: 'Build a login form',
+    version: 0,
+    status: 'draft',
+    versions: [],
+  });
+  assert.equal((await (await getPrompt(seat)).json()).draft, 'Build a login form');
+});
+
+test('finalizing a non-empty draft creates immutable versions in order', async t => {
+  let clock = 60_000_000;
+  const { join, putPrompt, finalizePrompt, getPrompt } = await fixture(t, {}, config, {
+    now: () => clock,
+    prompts: createPromptStore({ now: () => clock }),
+  });
+  const seat = await (await join({ name: 'Alice', accessCode: config.ROOM_ACCESS_CODE })).json();
+  await putPrompt(seat, 'First prompt');
+  const first = await finalizePrompt(seat);
+  assert.equal(first.status, 201);
+  assert.deepEqual(await first.json(), {
+    version: 1,
+    prompt: 'First prompt',
+    status: 'finalized',
+    createdAt: new Date(60_000_000).toISOString(),
+    finalizedBy: 'Alice',
+  });
+
+  clock = 60_000_500;
+  await putPrompt(seat, 'Second prompt');
+  const second = await finalizePrompt(seat);
+  assert.equal(second.status, 201);
+  assert.equal((await second.json()).version, 2);
+
+  const state = await (await getPrompt(seat)).json();
+  assert.equal(state.version, 2);
+  assert.equal(state.status, 'draft');
+  assert.equal(state.draft, 'Second prompt');
+  assert.equal(state.versions[0].prompt, 'First prompt');
+  assert.equal(state.versions[1].prompt, 'Second prompt');
+
+  // Finalized contents stay immutable even if the draft changes later.
+  await putPrompt(seat, 'Edited after finalize');
+  const afterEdit = await (await getPrompt(seat)).json();
+  assert.equal(afterEdit.draft, 'Edited after finalize');
+  assert.equal(afterEdit.versions[0].prompt, 'First prompt');
+  assert.equal(afterEdit.versions[1].prompt, 'Second prompt');
+});
+
+test('finalizing an empty draft is rejected', async t => {
+  const { join, putPrompt, finalizePrompt } = await fixture(t);
+  const seat = await (await join()).json();
+  assert.equal((await finalizePrompt(seat)).status, 400);
+  await putPrompt(seat, '   ');
+  const blank = await finalizePrompt(seat);
+  assert.equal(blank.status, 400);
+  assert.match((await blank.json()).error, /empty/i);
+});
+
+test('concurrent finalize requests cannot produce duplicate version numbers', async t => {
+  const { join, putPrompt, finalizePrompt, getPrompt } = await fixture(t);
+  const a = await (await join({ name: 'A', accessCode: config.ROOM_ACCESS_CODE })).json();
+  const b = await (await join({ name: 'B', accessCode: config.ROOM_ACCESS_CODE })).json();
+  await putPrompt(a, 'Shared concurrent draft');
+  const results = await Promise.all([finalizePrompt(a), finalizePrompt(b)]);
+  assert.deepEqual(results.map(response => response.status).sort(), [201, 201]);
+  const bodies = await Promise.all(results.map(response => response.json()));
+  const versions = bodies.map(body => body.version).sort((left, right) => left - right);
+  assert.deepEqual(versions, [1, 2]);
+  assert.equal(bodies[0].prompt, 'Shared concurrent draft');
+  assert.equal(bodies[1].prompt, 'Shared concurrent draft');
+  const state = await (await getPrompt(a)).json();
+  assert.deepEqual(state.versions.map(entry => entry.version), [1, 2]);
+});
+
+test('room prompt state is isolated between different rooms', async t => {
+  const sharedPrompts = createPromptStore();
+  const roomA = await fixture(t, {}, config, { roomName: 'room-a', prompts: sharedPrompts });
+  const roomB = await fixture(t, {}, config, { roomName: 'room-b', prompts: sharedPrompts });
+  const seatA = await (await roomA.join({ name: 'A', accessCode: config.ROOM_ACCESS_CODE })).json();
+  const seatB = await (await roomB.join({ name: 'B', accessCode: config.ROOM_ACCESS_CODE })).json();
+  assert.equal(seatA.roomName, 'room-a');
+  assert.equal(seatB.roomName, 'room-b');
+
+  await roomA.putPrompt(seatA, 'Prompt for A');
+  await roomB.putPrompt(seatB, 'Prompt for B');
+  assert.equal((await (await roomA.getPrompt(seatA)).json()).draft, 'Prompt for A');
+  assert.equal((await (await roomB.getPrompt(seatB)).json()).draft, 'Prompt for B');
+
+  // Cross-room reads/writes are rejected for the wrong room identity.
+  assert.equal((await roomA.getPrompt(seatA, 'room-b')).status, 404);
+  assert.equal((await roomA.putPrompt(seatA, 'tamper', 'room-b')).status, 404);
+  assert.equal((await roomB.getPrompt(seatB, 'room-a')).status, 404);
+
+  await roomA.finalizePrompt(seatA);
+  await roomB.putPrompt(seatB, 'Room B iteration two');
+  await roomB.finalizePrompt(seatB);
+  await roomB.finalizePrompt(seatB);
+  assert.equal((await (await roomA.getPrompt(seatA)).json()).version, 1);
+  assert.equal((await (await roomB.getPrompt(seatB)).json()).version, 2);
+});
+
+test('prompt API rejects invalid drafts, oversized payloads, and non-joined access', async t => {
+  const { join, putPrompt, getPrompt, finalizePrompt, base } = await fixture(t);
+  const seat = await (await join()).json();
+
+  const missingAuth = await fetch(base + '/api/rooms/' + encodeURIComponent(ROOM_NAME) + '/prompt');
+  assert.equal(missingAuth.status, 403);
+
+  const wrongKey = await getPrompt({ ...seat, leaveKey: 'not-the-key' });
+  assert.equal(wrongKey.status, 403);
+
+  const afterLeave = await (await join({ name: 'Leaver', accessCode: config.ROOM_ACCESS_CODE })).json();
+  const leaveResponse = await fetch(base + '/api/leave', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ identity: afterLeave.identity, leaveKey: afterLeave.leaveKey }),
+  });
+  assert.equal(leaveResponse.status, 204);
+  assert.equal((await getPrompt(afterLeave)).status, 403);
+  assert.equal((await putPrompt(afterLeave, 'nope')).status, 403);
+  assert.equal((await finalizePrompt(afterLeave)).status, 403);
+
+  const invalidType = await fetch(base + '/api/rooms/' + encodeURIComponent(ROOM_NAME) + '/prompt', {
+    method: 'PUT',
+    headers: {
+      'content-type': 'application/json',
+      'x-participant-identity': seat.identity,
+      'x-leave-key': seat.leaveKey,
+    },
+    body: JSON.stringify({ draft: 42 }),
+  });
+  assert.equal(invalidType.status, 400);
+
+  const oversized = await putPrompt(seat, 'x'.repeat(MAX_PROMPT_LENGTH + 1));
+  assert.equal(oversized.status, 413);
+});
+
+test('admitted participant can record a manual run for a finalized prompt', async t => {
+  let clock = 70_000_000;
+  let ids = 0;
+  const { join, putPrompt, finalizePrompt, createRun, getRun, getRunImage, listRuns } = await fixture(t, {}, config, {
+    now: () => clock,
+    prompts: createPromptStore({ now: () => clock }),
+    runs: createRunStore({ now: () => clock, createId: () => 'run_test_' + (++ids) }),
+  });
+  const seat = await (await join({ name: 'Arjun', accessCode: config.ROOM_ACCESS_CODE })).json();
+  await putPrompt(seat, 'Exact finalized prompt text');
+  await finalizePrompt(seat);
+  await putPrompt(seat, 'Draft changed after finalize');
+
+  const created = await createRun(seat, {
+    promptVersion: 1,
+    status: 'success',
+    notes: 'Build completed successfully.',
+    ...jpegPayload(),
+  });
+  assert.equal(created.status, 201);
+  const body = await created.json();
+  assert.equal(body.id, 'run_test_1');
+  assert.equal(body.roomName, ROOM_NAME);
+  assert.equal(body.promptVersion, 1);
+  assert.equal(body.promptSnapshot, 'Exact finalized prompt text');
+  assert.equal(body.executedBy, 'Arjun');
+  assert.equal(body.executedAt, new Date(70_000_000).toISOString());
+  assert.equal(body.status, 'success');
+  assert.equal(body.notes, 'Build completed successfully.');
+  assert.equal(body.imageUrl, `/api/rooms/${encodeURIComponent(ROOM_NAME)}/runs/run_test_1/image`);
+  assert.equal('jpeg' in body, false);
+
+  const fetched = await (await getRun(seat, body.id)).json();
+  assert.equal(fetched.promptSnapshot, 'Exact finalized prompt text');
+  assert.equal(fetched.executedBy, 'Arjun');
+
+  const image = await getRunImage(seat, body.id);
+  assert.equal(image.status, 200);
+  assert.equal(image.headers.get('content-type'), 'image/jpeg');
+  assert.equal(image.headers.get('x-content-type-options'), 'nosniff');
+  const bytes = Buffer.from(await image.arrayBuffer());
+  assert.deepEqual(bytes.subarray(0, 3), Buffer.from([0xFF, 0xD8, 0xFF]));
+
+  clock = 70_001_000;
+  const second = await createRun(seat, {
+    promptVersion: 1,
+    status: 'failure',
+    notes: 'Retry failed',
+    ...jpegPayload(sampleJpeg(8)),
+  });
+  assert.equal(second.status, 201);
+  assert.equal((await second.json()).id, 'run_test_2');
+
+  const listed = await (await listRuns(seat)).json();
+  assert.deepEqual(listed.runs.map(run => run.id), ['run_test_2', 'run_test_1']);
+});
+
+test('run creation validates prompt version, status, and JPEG input', async t => {
+  const { join, putPrompt, finalizePrompt, createRun, getRun, base } = await fixture(t);
+  const seat = await (await join({ name: 'Akshay', accessCode: config.ROOM_ACCESS_CODE })).json();
+
+  assert.equal((await createRun(seat, { promptVersion: 1, status: 'success', ...jpegPayload() })).status, 404);
+  assert.equal((await createRun(seat, { promptVersion: 0, status: 'success', ...jpegPayload() })).status, 400);
+  assert.equal((await createRun(seat, { promptVersion: -1, status: 'success', ...jpegPayload() })).status, 400);
+
+  await putPrompt(seat, 'Ready to finalize');
+  // Draft alone cannot be used until finalized.
+  assert.equal((await createRun(seat, { promptVersion: 1, status: 'success', ...jpegPayload() })).status, 404);
+  await finalizePrompt(seat);
+
+  assert.equal((await createRun(seat, { promptVersion: 1, status: 'maybe', ...jpegPayload() })).status, 400);
+  assert.equal((await createRun(seat, { promptVersion: 1, status: 'success' })).status, 400);
+  assert.equal((await createRun(seat, {
+    promptVersion: 1, status: 'success', contentType: 'image/png', jpegBase64: sampleJpeg().toString('base64'),
+  })).status, 415);
+  assert.equal((await createRun(seat, {
+    promptVersion: 1, status: 'success', contentType: 'image/jpeg', jpegBase64: Buffer.from('not-a-jpeg').toString('base64'),
+  })).status, 400);
+  assert.equal((await createRun(seat, {
+    promptVersion: 1, status: 'success', contentType: 'image/jpeg',
+    // 4-byte SOI prefix + padding => exactly one byte over MAX_JPEG_BYTES.
+    jpegBase64: sampleJpeg(MAX_JPEG_BYTES - 3).toString('base64'),
+  })).status, 413);
+
+  const ok = await createRun(seat, { promptVersion: 1, status: 'failure', ...jpegPayload() });
+  assert.equal(ok.status, 201);
+  assert.equal((await getRun(seat, 'missing-run')).status, 404);
+  assert.equal((await fetch(base + '/api/rooms/' + encodeURIComponent(ROOM_NAME) + '/runs')).status, 403);
+});
+
+test('run history is isolated between rooms', async t => {
+  const sharedPrompts = createPromptStore();
+  const sharedRuns = createRunStore();
+  const roomA = await fixture(t, {}, config, { roomName: 'room-a', prompts: sharedPrompts, runs: sharedRuns });
+  const roomB = await fixture(t, {}, config, { roomName: 'room-b', prompts: sharedPrompts, runs: sharedRuns });
+  const seatA = await (await roomA.join({ name: 'A', accessCode: config.ROOM_ACCESS_CODE })).json();
+  const seatB = await (await roomB.join({ name: 'B', accessCode: config.ROOM_ACCESS_CODE })).json();
+
+  await roomA.putPrompt(seatA, 'Room A prompt');
+  await roomA.finalizePrompt(seatA);
+  await roomB.putPrompt(seatB, 'Room B prompt');
+  await roomB.finalizePrompt(seatB);
+
+  const createdA = await (await roomA.createRun(seatA, {
+    promptVersion: 1, status: 'success', ...jpegPayload(),
+  })).json();
+  const createdB = await (await roomB.createRun(seatB, {
+    promptVersion: 1, status: 'failure', ...jpegPayload(sampleJpeg(4)),
+  })).json();
+
+  assert.equal((await (await roomA.listRuns(seatA)).json()).runs.length, 1);
+  assert.equal((await (await roomB.listRuns(seatB)).json()).runs.length, 1);
+  assert.equal((await roomA.listRuns(seatA, 'room-b')).status, 404);
+  assert.equal((await roomA.getRun(seatA, createdB.id)).status, 404);
+  assert.equal((await roomA.getRun(seatA, createdB.id, 'room-b')).status, 404);
+  assert.equal((await roomA.getRunImage(seatA, createdB.id, 'room-b')).status, 404);
+  assert.equal((await roomA.getRunImage(seatA, createdA.id)).status, 200);
+  assert.equal((await roomB.getRunImage(seatB, createdB.id)).status, 200);
+  assert.notEqual(createdA.promptSnapshot, createdB.promptSnapshot);
 });
