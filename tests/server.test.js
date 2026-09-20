@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { TokenVerifier } from 'livekit-server-sdk';
-import { createApp, ROOM_NAME } from '../server/app.js';
+import { createApp, MAX_PARTICIPANTS, ROOM_NAME } from '../server/app.js';
 
 const config = {
   LIVEKIT_URL: 'wss://example.livekit.cloud',
@@ -48,18 +48,18 @@ test('same code and same display name produce separately signed identities in th
     assert.equal(claim.video.canPublish, true);
     assert.equal(claim.video.canSubscribe, true);
     assert.equal(claim.video.canPublishData, true);
-    assert.equal(claim.roomConfig.maxParticipants, 2);
+    assert.equal(claim.roomConfig.maxParticipants, MAX_PARTICIPANTS);
   }
-  assert.ok(calls.every(call => call.maxParticipants === 2));
+  assert.ok(calls.every(call => call.maxParticipants === MAX_PARTICIPANTS));
   assert.ok(bodies.every(body => !JSON.stringify(body).includes(config.LIVEKIT_API_SECRET)));
   assert.ok(bodies.every(body => !JSON.stringify(body).includes(config.ROOM_ACCESS_CODE)));
 });
 
-test('rejects a third participant and allows a replacement after one leaves', async t => {
-  let count = 2;
+test('rejects a join when the room is full and allows a replacement after one leaves', async t => {
+  let count = MAX_PARTICIPANTS;
   const { join } = await fixture(t, { listParticipants: async () => Array.from({ length: count }, (_, i) => ({ identity: String(i) })) });
   assert.equal((await join()).status, 409);
-  count = 1;
+  count = MAX_PARTICIPANTS - 1;
   assert.equal((await join()).status, 200);
 });
 
@@ -85,17 +85,20 @@ test('does not issue tokens for or delete an older unlimited room', async t => {
   assert.equal((await join()).status, 409);
   assert.equal(calls.length, 0);
 });
-test('three simultaneous requests reserve exactly two seats before anyone connects', async t => {
+test('simultaneous requests reserve exactly the max seats before anyone connects', async t => {
   const { join } = await fixture(t);
-  const results = await Promise.all([join(), join(), join()]);
-  assert.deepEqual(results.map(response => response.status).sort(), [200, 200, 409]);
+  const results = await Promise.all(Array.from({ length: MAX_PARTICIPANTS + 1 }, () => join()));
+  assert.deepEqual(
+    results.map(response => response.status).sort(),
+    [...Array(MAX_PARTICIPANTS).fill(200), 409],
+  );
 });
 
 test('only the holder can release a seat, and revocation completes before replacement admission', async t => {
   const revoked = [];
   const { join, leave } = await fixture(t, { removeParticipant: async (_room, identity) => { revoked.push(identity); } });
   const first = await (await join()).json();
-  await join();
+  for (let i = 1; i < MAX_PARTICIPANTS; i++) await join();
   assert.equal((await leave({ identity: first.identity, leaveKey: 'wrong' })).status, 403);
   assert.equal((await join()).status, 409);
   assert.equal((await leave({ identity: first.identity, leaveKey: first.leaveKey })).status, 204);
@@ -124,7 +127,7 @@ test('abandoned reservations expire only after revocation; active participants k
 test('revocation failure cannot free a reserved seat', async t => {
   const { join, leave } = await fixture(t, { removeParticipant: async () => { throw new Error('Offline'); } });
   const first = await (await join()).json();
-  await join();
+  for (let i = 1; i < MAX_PARTICIPANTS; i++) await join();
   assert.equal((await leave({ identity: first.identity, leaveKey: first.leaveKey })).status, 502);
   assert.equal((await join()).status, 409);
 });
@@ -139,8 +142,7 @@ test('outstanding reservations survive a server restart', async t => {
   const file = path.join(directory, 'admissions.json');
   t.after(() => { rmSync(file, { force: true }); rmdirSync(directory); });
   const firstServer = await fixture(t, {}, config, { admissions: createAdmissionStore(file) });
-  await firstServer.join();
-  await firstServer.join();
+  for (let i = 0; i < MAX_PARTICIPANTS; i++) await firstServer.join();
   const restartedServer = await fixture(t, {}, config, { admissions: createAdmissionStore(file) });
   assert.equal((await restartedServer.join()).status, 409);
 });

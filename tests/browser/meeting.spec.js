@@ -34,16 +34,20 @@ test('two real LiveKit connections exchange media, share together, focus, recove
   let roomName;
   const pageErrors = [];
   try {
-    // Reserve both seats before connection; a third pending join must also be rejected.
+    // Reserve both connected seats plus pending fillers before connection; a seventh pending join must also be rejected.
     const tickets = await Promise.all(['Alice test', 'Bob test'].map(async name => {
       const response = await request.post('/api/join', { data: { name, accessCode: process.env.ROOM_ACCESS_CODE } });
       expect(response.status()).toBe(200);
       return response.json();
     }));
     roomName = tickets[0].roomName;
-    const pendingFull = await request.post('/api/join', { data: { name: 'Third pending', accessCode: process.env.ROOM_ACCESS_CODE } });
+    for (let i = 0; i < 4; i++) {
+      const filler = await request.post('/api/join', { data: { name: `Pending ${i}`, accessCode: process.env.ROOM_ACCESS_CODE } });
+      expect(filler.status()).toBe(200);
+    }
+    const pendingFull = await request.post('/api/join', { data: { name: 'Seventh pending', accessCode: process.env.ROOM_ACCESS_CODE } });
     expect(pendingFull.status()).toBe(409);
-    expect((await service.listRooms([roomName]))[0].maxParticipants).toBe(2);
+    expect((await service.listRooms([roomName]))[0].maxParticipants).toBe(6);
 
     async function participant(name, ticket) {
       const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, permissions: ['camera', 'microphone'] });
@@ -86,7 +90,7 @@ test('two real LiveKit connections exchange media, share together, focus, recove
     const alice = await participant('Alice test', tickets[0]);
     const bob = await participant('Bob test', tickets[1]);
     for (const page of [alice, bob]) {
-      await expect(page.getByText('2 / 2 participants', { exact: true })).toBeVisible();
+      await expect(page.getByText('2 / 6 participants', { exact: true })).toBeVisible();
       await page.getByRole('button', { name: 'Camera', exact: true }).click();
       await page.getByRole('button', { name: 'Microphone', exact: true }).click();
       await page.getByRole('button', { name: 'Share screen', exact: true }).click();
@@ -132,20 +136,20 @@ test('two real LiveKit connections exchange media, share together, focus, recove
     await bob.getByRole('button', { name: 'Share screen', exact: true }).click();
     await expect(alice.locator('.screen-tile:visible')).toHaveCount(2);
 
-    const full = await request.post('/api/join', { data: { name: 'Third', accessCode: process.env.ROOM_ACCESS_CODE } });
+    const full = await request.post('/api/join', { data: { name: 'Overflow', accessCode: process.env.ROOM_ACCESS_CODE } });
     expect(full.status()).toBe(409);
-    const third = await participant('Third test');
-    await expect(third.getByRole('alert')).toBeVisible();
+    const overflow = await participant('Overflow test');
+    await expect(overflow.getByRole('alert')).toBeVisible();
     expect((await service.listParticipants(roomName)).length).toBe(2);
-    await third.context().close();
+    await overflow.context().close();
 
     const release = bob.waitForResponse(response => response.url().endsWith('/api/leave'));
     await bob.getByRole('button', { name: 'Leave', exact: true }).click();
     expect((await release).status()).toBe(204);
-    await expect(alice.getByText('1 / 2 participants', { exact: true })).toBeVisible();
+    await expect(alice.getByText('1 / 6 participants', { exact: true })).toBeVisible();
     const replacement = await participant('Replacement test');
-    await expect(replacement.getByText('2 / 2 participants', { exact: true })).toBeVisible();
-    await expect(alice.getByText('2 / 2 participants', { exact: true })).toBeVisible();
+    await expect(replacement.getByText('2 / 6 participants', { exact: true })).toBeVisible();
+    await expect(alice.getByText('2 / 6 participants', { exact: true })).toBeVisible();
     const stale = await participant('Old token test', tickets[1]);
     await expect(stale.getByRole('alert')).toBeVisible();
     expect((await service.listParticipants(roomName)).length).toBe(2);

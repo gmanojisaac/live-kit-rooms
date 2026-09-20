@@ -64,7 +64,7 @@ function App() {
   if (!connection) return (
     <main className="welcome">
       <h1>Collaborative Development Room</h1>
-      <p>A private room for two people. Talk, use your cameras, and share both screens together.</p>
+      <p>A private room for up to six people. Talk, use your cameras, and share screens together.</p>
       <form onSubmit={join}>
         <label>Your name<input value={name} maxLength={40} onChange={e => setName(e.target.value)} required autoComplete="name" /></label>
         <label>Room access code<input type="password" value={accessCode} onChange={e => setAccessCode(e.target.value)} required autoComplete="off" /></label>
@@ -72,7 +72,7 @@ function App() {
       </form>
       {error && <p role="alert" className="error">{error}</p>}
       <Invitation />
-      <p className="hint">Both people use the same access code. Your camera and microphone start off; enable them after joining.</p>
+      <p className="hint">Everyone uses the same access code. Your camera and microphone start off; enable them after joining.</p>
     </main>
   );
 

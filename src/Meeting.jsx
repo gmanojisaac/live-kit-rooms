@@ -35,7 +35,7 @@ export function Meeting() {
     <LayoutContextProvider onWidgetChange={state => setShowChat(state.showChat)}>
       <div className="meeting">
         <header className="meeting-header">
-          <div><h1>Collaborative Development Room</h1><p role="status">{participants.length} / 2 participants</p></div>
+          <div><h1>Collaborative Development Room</h1><p role="status">{participants.length} / 6 participants</p></div>
           <Invitation />
         </header>
         {deviceError && <div role="alert" className="device-error">{deviceError}<button onClick={() => setDeviceError('')}>Dismiss</button></div>}

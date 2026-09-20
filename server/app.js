@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { createAdmissionStore } from './admissions.js';
 
 export const ROOM_NAME = 'collaborative-development-room';
-export const MAX_PARTICIPANTS = 2;
+export const MAX_PARTICIPANTS = 6;
 const here = path.dirname(fileURLToPath(import.meta.url));
 
 function constantTimeMatch(left, right) {
@@ -53,7 +53,7 @@ export function createApp({
         // Do not migrate a running unlimited room or disconnect its participants.
         if (existing && existing.maxParticipants !== MAX_PARTICIPANTS) {
           return res.status(409).json({
-            error: 'The previous trial room is still open. Everyone must leave it, then wait for it to close (usually about one minute) and try again to enable the two-person limit.',
+            error: `The previous trial room is still open. Everyone must leave it, then wait for it to close (usually about one minute) and try again to enable the ${MAX_PARTICIPANTS}-person limit.`,
           });
         }
         const room = await client.createRoom({
@@ -73,7 +73,7 @@ export function createApp({
         const occupied = new Set([...active, ...admissions.entries.keys()]);
         if (occupied.size >= MAX_PARTICIPANTS) {
           return res.status(409).json({
-            error: 'This trial room already has two participants or pending joins. Try again after someone leaves; an abandoned join clears after two minutes.',
+            error: `This trial room already has ${MAX_PARTICIPANTS} participants or pending joins. Try again after someone leaves; an abandoned join clears after two minutes.`,
           });
         }
         const identity = randomUUID();
