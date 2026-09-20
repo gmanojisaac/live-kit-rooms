@@ -3,8 +3,14 @@ import { AccessToken, RoomConfiguration, RoomServiceClient } from 'livekit-serve
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createAdmissionStore } from './admissions.js';
+import { createAdmissionStore, createReservation, RESERVATION_TTL_MS } from './admissions.js';
+import { createClientIpResolver, createJoinRateLimiter, parseTrustedProxyIps } from './rate-limit.js';
 
+export { RESERVATION_TTL_MS };
+export {
+  JOIN_RATE_LIMIT_MAX_FAILURES, JOIN_RATE_LIMIT_WINDOW_MS, createJoinRateLimiter, clientIp, normalizeIp,
+  createClientIpResolver, parseTrustedProxyIps, isValidIp,
+} from './rate-limit.js';
 export const ROOM_NAME = 'collaborative-development-room';
 export const MAX_PARTICIPANTS = 6;
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -19,6 +25,10 @@ function constantTimeMatch(left, right) {
 export function createApp({
   config = process.env, roomService, roomName = ROOM_NAME, logger = console,
   admissions = createAdmissionStore(), now = Date.now,
+  joinRateLimiter = createJoinRateLimiter({ now }),
+  getClientIp = createClientIpResolver({
+    trustedProxyIps: parseTrustedProxyIps(config.TRUSTED_PROXY_IPS),
+  }),
 } = {}) {
   const app = express();
   app.use(express.json({ limit: '10kb' }));
@@ -42,9 +52,19 @@ export function createApp({
   app.post('/api/join', async (req, res) => {
     res.set('Cache-Control', 'no-store');
     if (!configured) return res.status(503).json({ error: 'Server is not configured. Set the environment variables.' });
+    const ip = getClientIp(req);
+    const limit = joinRateLimiter.check(ip);
+    if (limit.limited) {
+      res.set('Retry-After', String(limit.retryAfterSeconds));
+      return res.status(429).json({ error: 'Too many attempts. Please try again later.' });
+    }
     const { name, accessCode } = req.body || {};
-    if (!constantTimeMatch(accessCode, ROOM_ACCESS_CODE)) return res.status(403).json({ error: 'Incorrect access code.' });
+    if (!constantTimeMatch(accessCode, ROOM_ACCESS_CODE)) {
+      joinRateLimiter.recordFailure(ip);
+      return res.status(403).json({ error: 'Incorrect access code.' });
+    }
     if (typeof name !== 'string' || name.trim().length < 1 || name.trim().length > 40) {
+      joinRateLimiter.recordFailure(ip);
       return res.status(400).json({ error: 'Enter a name (1–40 characters).' });
     }
     try {
@@ -77,16 +97,17 @@ export function createApp({
           });
         }
         const identity = randomUUID();
-        const leaveKey = randomUUID();
+        const reservation = createReservation(randomUUID(), now);
+        // Absolute token expiry is the reservation's pendingUntil, so the JWT cannot outlive the seat hold.
         const token = new AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET, {
-          identity, name: name.trim(), ttl: '10m',
+          identity, name: name.trim(), ttl: new Date(reservation.pendingUntil),
         });
         token.addGrant({ roomJoin: true, room: roomName, canPublish: true, canSubscribe: true, canPublishData: true });
         token.roomConfig = new RoomConfiguration({ name: roomName, maxParticipants: MAX_PARTICIPANTS, departureTimeout: 20 });
         const jwt = await token.toJwt();
-        admissions.entries.set(identity, { leaveKey, pendingUntil: now() + 120_000 });
+        admissions.entries.set(identity, reservation);
         admissions.save();
-        return res.json({ token: jwt, serverUrl: LIVEKIT_URL, roomName, identity, leaveKey });
+        return res.json({ token: jwt, serverUrl: LIVEKIT_URL, roomName, identity, leaveKey: reservation.leaveKey });
       });
     } catch (error) {
       logger.error('Room join failed:', error.name || 'Error');

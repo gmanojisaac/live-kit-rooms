@@ -1,6 +1,13 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
+// Single source of truth for pending-seat hold and LiveKit join-token lifetime.
+export const RESERVATION_TTL_MS = 2 * 60 * 1000;
+
+export function createReservation(leaveKey, now = Date.now) {
+  return { leaveKey, pendingUntil: now() + RESERVATION_TTL_MS };
+}
+
 // One application server owns this store. Persist reservations before returning tokens,
 // so restarting that server cannot forget outstanding admissions.
 export function createAdmissionStore(file) {
