@@ -204,7 +204,7 @@ export default function JoinRoomForm({ slug, inviteToken, roomMeta }) {
     } else if (info?.kind === 'left') {
       setEndedMessage('You left the meeting.');
     } else if (info?.kind === 'removed') {
-      setEndedMessage('You were removed from this room by the owner.');
+      setEndedMessage('You were removed from this room by the coordinator.');
     } else if (info?.kind === 'ended') {
       setEndedMessage('This meeting has ended.');
     }
@@ -238,7 +238,7 @@ export default function JoinRoomForm({ slug, inviteToken, roomMeta }) {
       <div className="gm-create-card" style={{ maxWidth: '480px', margin: '2rem auto', textAlign: 'center' }}>
         <h2>Joining the meeting…</h2>
         <p className="hint" role="status">
-          Signing in as {displayName || 'the host'} with the access code from when this room was created.
+          Signing in as {displayName || 'the coordinator'} with the access code from when this room was created.
         </p>
       </div>
     );

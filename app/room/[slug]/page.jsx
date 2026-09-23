@@ -100,9 +100,9 @@ export default async function RoomPage({ params, searchParams }) {
               {room.promptLocked ? ' · prompt locked' : ''}
             </p>
 
-            {room.isOwner ? (
+            {room.isOwner || room.isCoordinator ? (
               <details className="gm-owner-accordion">
-                <summary>Host moderation controls</summary>
+                <summary>Coordinator moderation controls</summary>
                 <div className="gm-owner-accordion__body">
                   <OwnerModerationPanel slug={room.slug} initialRoom={room} />
                 </div>

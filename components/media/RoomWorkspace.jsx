@@ -9,7 +9,7 @@ import {
   useParticipants,
   useRoomContext,
 } from '@livekit/components-react';
-import { Track } from 'livekit-client';
+import { RoomEvent, Track } from 'livekit-client';
 import { ConnectionStatus } from './ConnectionStatus.jsx';
 import { ScreenShareGrid } from './ScreenShareGrid.jsx';
 import { ParticipantPresence } from './ParticipantPresence.jsx';
@@ -18,6 +18,12 @@ import { NetworkQualityBanner } from './NetworkQualityBanner.jsx';
 import { MediaDiagnostics } from './MediaDiagnostics.jsx';
 import { FocusQualityController } from './FocusQualityController.jsx';
 import { CollaborativePromptEditor } from '@/components/prompt/CollaborativePromptEditor.jsx';
+import {
+  COORDINATOR_TRANSFER_DATA_TOPIC,
+  COORDINATOR_TRANSFER_HANDOFF_EVENT,
+  parseCoordinatorTransferPayload,
+  publishCoordinatorTransfer,
+} from '@/lib/rooms/coordinator-transfer-client.js';
 import {
   MicIcon,
   CameraIcon,
@@ -38,6 +44,17 @@ async function postOwnerAction(slug, path, body = {}) {
     credentials: 'same-origin',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
+  });
+  const payload = await response.json().catch(() => ({}));
+  return { ok: response.ok, status: response.status, payload };
+}
+
+async function claimCoordinatorRole(slug, claimToken, identity) {
+  const response = await fetch(`/api/rooms/${encodeURIComponent(slug)}/claim-coordinator`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ claimToken, identity }),
   });
   const payload = await response.json().catch(() => ({}));
   return { ok: response.ok, payload };
@@ -65,7 +82,9 @@ export function RoomWorkspace({
     isScreenShareEnabled = false,
   } = useLocalParticipant();
 
-  const isOwner = Boolean(roomMeta?.isOwner);
+  const [isCoordinator, setIsCoordinator] = useState(
+    Boolean(roomMeta?.isCoordinator ?? roomMeta?.isOwner),
+  );
   const [focusedId, setFocusedId] = useState(null);
   const [activeDrawerTab, setActiveDrawerTab] = useState(null); // 'people' | 'chat' | 'activities' | 'info' | null
   const [showMoreMenu, setShowMoreMenu] = useState(false);
@@ -79,10 +98,12 @@ export function RoomWorkspace({
   const [hostError, setHostError] = useState('');
   const [promptLocked, setPromptLocked] = useState(Boolean(roomMeta?.promptLocked));
   const [inviteRevoked, setInviteRevoked] = useState(false);
+  const [coordinatorNotice, setCoordinatorNotice] = useState('');
 
   const prevConnRef = useRef(livekitState);
   const focusContainerRef = useRef(null);
   const moreMenuRef = useRef(null);
+  const claimInFlightRef = useRef(false);
 
   useEffect(() => {
     function updateClock() {
@@ -205,10 +226,95 @@ export function RoomWorkspace({
   const displayName = admission?.participant?.displayName || 'Participant';
   const title = roomMeta?.title || admission?.room?.title || 'Meeting';
   const slug = admission?.room?.slug || roomMeta?.slug || '';
+  const localIdentity = admission?.participant?.identity
+    || localParticipant?.identity
+    || '';
   const drawerOpen = Boolean(activeDrawerTab);
 
+  useEffect(() => {
+    setIsCoordinator(Boolean(roomMeta?.isCoordinator ?? roomMeta?.isOwner));
+  }, [roomMeta?.isCoordinator, roomMeta?.isOwner]);
+
+  const refreshCoordinatorStatus = useCallback(async () => {
+    if (!slug) return;
+    try {
+      const response = await fetch(`/api/rooms/${encodeURIComponent(slug)}`, {
+        credentials: 'same-origin',
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      const next = Boolean(data.isCoordinator ?? data.isOwner ?? data.room?.isCoordinator ?? data.room?.isOwner);
+      setIsCoordinator(next);
+      if (typeof data.room?.promptLocked === 'boolean') {
+        setPromptLocked(data.room.promptLocked);
+      }
+    } catch {
+      // non-fatal
+    }
+  }, [slug]);
+
+  const acceptCoordinatorTransfer = useCallback(async (payload) => {
+    if (!payload?.claimToken || !payload?.slug) return;
+    if (payload.slug !== slug) return;
+    if (!localIdentity) return;
+    if (claimInFlightRef.current) return;
+    claimInFlightRef.current = true;
+    try {
+      const result = await claimCoordinatorRole(payload.slug, payload.claimToken, localIdentity);
+      if (!result.ok) {
+        setHostError(result.payload?.error || 'Unable to accept coordinator role.');
+        return;
+      }
+      setIsCoordinator(true);
+      setCoordinatorNotice('You are now the coordinator for this meeting.');
+      setHostMessage('You are now the coordinator for this meeting.');
+      setHostError('');
+    } catch {
+      setHostError('Unable to accept coordinator role.');
+    } finally {
+      claimInFlightRef.current = false;
+    }
+  }, [slug, localIdentity]);
+
+  useEffect(() => {
+    if (!room) return undefined;
+
+    const onData = (payload, _participant, _kind, topic) => {
+      if (topic && topic !== COORDINATOR_TRANSFER_DATA_TOPIC) return;
+      const parsed = parseCoordinatorTransferPayload(payload);
+      if (!parsed) return;
+      acceptCoordinatorTransfer(parsed);
+    };
+
+    room.on(RoomEvent.DataReceived, onData);
+    return () => {
+      room.off(RoomEvent.DataReceived, onData);
+    };
+  }, [room, acceptCoordinatorTransfer]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+
+    function onHandoff(event) {
+      const detail = event?.detail;
+      if (!detail?.claimToken || !detail?.targetIdentity || !localParticipant) return;
+      if (detail.slug && detail.slug !== slug) return;
+      publishCoordinatorTransfer(localParticipant, {
+        claimToken: detail.claimToken,
+        slug: detail.slug || slug,
+        expiresAt: detail.expiresAt || '',
+        targetIdentity: detail.targetIdentity,
+      }).catch(() => {
+        setHostError('Transfer created, but could not notify the participant in-call.');
+      });
+    }
+
+    window.addEventListener(COORDINATOR_TRANSFER_HANDOFF_EVENT, onHandoff);
+    return () => window.removeEventListener(COORDINATOR_TRANSFER_HANDOFF_EVENT, onHandoff);
+  }, [localParticipant, slug]);
+
   async function runHostAction(path, body, { confirmMessage, onSuccess } = {}) {
-    if (!isOwner || !slug) return;
+    if (!isCoordinator || !slug) return;
     if (confirmMessage && typeof window !== 'undefined' && !window.confirm(confirmMessage)) {
       return;
     }
@@ -218,12 +324,64 @@ export function RoomWorkspace({
     try {
       const result = await postOwnerAction(slug, path, body);
       if (!result.ok) {
+        if (result.payload?.code === 'OWNER_UNAUTHORIZED'
+          || result.payload?.code === 'OWNER_FORBIDDEN'
+          || result.status === 401
+          || result.status === 403) {
+          setIsCoordinator(false);
+        }
         setHostError(result.payload?.error || 'Unable to complete that action.');
         return;
       }
       onSuccess?.(result.payload);
     } catch {
       setHostError('Network error. Check your connection and try again.');
+    } finally {
+      setHostBusy('');
+    }
+  }
+
+  async function onMakeCoordinator(identity, displayLabel) {
+    if (!isCoordinator || !slug || !localParticipant) return;
+    const label = displayLabel || 'this participant';
+    if (typeof window !== 'undefined'
+      && !window.confirm(
+        `Make ${label} the coordinator? You will lose host controls after they accept.`,
+      )) {
+      return;
+    }
+
+    setHostBusy('/transfer-coordinator');
+    setHostError('');
+    setHostMessage('');
+    try {
+      const result = await postOwnerAction(slug, '/transfer-coordinator', { identity });
+      if (!result.ok) {
+        setHostError(result.payload?.error || 'Unable to transfer coordinator role.');
+        return;
+      }
+
+      await publishCoordinatorTransfer(localParticipant, {
+        claimToken: result.payload.claimToken,
+        slug,
+        expiresAt: result.payload.expiresAt || '',
+        targetIdentity: result.payload.targetIdentity || identity,
+      });
+
+      setHostMessage(`Transfer sent to ${label}. Waiting for them to accept…`);
+
+      let attempts = 0;
+      const maxAttempts = 50;
+      const poll = async () => {
+        attempts += 1;
+        await refreshCoordinatorStatus();
+        if (attempts < maxAttempts) {
+          setTimeout(poll, 2500);
+        }
+      };
+      setTimeout(poll, 2000);
+    } catch {
+      setHostError('Unable to transfer coordinator role.');
     } finally {
       setHostBusy('');
     }
@@ -324,7 +482,8 @@ export function RoomWorkspace({
               <ul className="gm-people-list">
                 {participants.map((p) => {
                   const initial = (p.name || 'P')[0]?.toUpperCase() || 'P';
-                  const canRemove = isOwner && !p.isLocal;
+                  const canRemove = isCoordinator && !p.isLocal;
+                  const canTransfer = isCoordinator && !p.isLocal;
                   return (
                     <li key={p.identity} className="gm-people-item">
                       <div className="gm-people-info">
@@ -337,6 +496,19 @@ export function RoomWorkspace({
                       <div className="gm-people-icons">
                         <MicIcon muted={!p.isMicrophoneEnabled} size={18} />
                         {p.isScreenShareEnabled ? <PresentIcon size={16} /> : null}
+                        {canTransfer ? (
+                          <button
+                            type="button"
+                            className="gm-people-remove"
+                            disabled={Boolean(hostBusy)}
+                            onClick={() => onMakeCoordinator(
+                              p.identity,
+                              (p.name || '').trim() || 'Participant',
+                            )}
+                          >
+                            {hostBusy === '/transfer-coordinator' ? '…' : 'Make coordinator'}
+                          </button>
+                        ) : null}
                         {canRemove ? (
                           <button
                             type="button"
@@ -357,9 +529,9 @@ export function RoomWorkspace({
                   );
                 })}
               </ul>
-              {isOwner && (hostError || hostMessage) ? (
+              {(isCoordinator || coordinatorNotice) && (hostError || hostMessage || coordinatorNotice) ? (
                 <p className={hostError ? 'error' : 'hint'} role={hostError ? 'alert' : 'status'} style={{ padding: '0 1rem' }}>
-                  {hostError || hostMessage}
+                  {hostError || hostMessage || coordinatorNotice}
                 </p>
               ) : null}
             </div>
@@ -410,9 +582,9 @@ export function RoomWorkspace({
                 </p>
               </div>
 
-              {isOwner ? (
-                <div className="gm-info-block gm-host-controls" aria-label="Host controls">
-                  <h4>Host controls</h4>
+              {isCoordinator ? (
+                <div className="gm-info-block gm-host-controls" aria-label="Coordinator controls">
+                  <h4>Coordinator controls</h4>
                   {hostError ? <p className="error" role="alert">{hostError}</p> : null}
                   {hostMessage ? <p className="hint" role="status">{hostMessage}</p> : null}
 
@@ -570,7 +742,7 @@ export function RoomWorkspace({
                 >
                   <ActivitiesIcon size={16} /> Shared prompt
                 </button>
-                {isOwner ? (
+                {isCoordinator ? (
                   <button
                     type="button"
                     role="menuitem"
@@ -580,7 +752,7 @@ export function RoomWorkspace({
                       toggleTab('info');
                     }}
                   >
-                    Host controls
+                    Coordinator controls
                   </button>
                 ) : null}
               </div>

@@ -758,6 +758,26 @@ main.room-page {
   background: var(--gm-red-subtle);
   color: #f28b82;
 }
+.owner-participant-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+.owner-participant-list > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.owner-participant-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
 
 /* ==========================================================================
    Live Meet In-Call Workspace (Full Viewport 100vh)

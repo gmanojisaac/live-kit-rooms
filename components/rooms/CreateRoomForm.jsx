@@ -135,7 +135,7 @@ export default function CreateRoomForm() {
           </div>
 
           <p className="hint">
-            Your display name and access code are kept for this browser tab, so joining as the host does not ask for them again. The access code is never placed in the URL. Share the code separately with your team.
+            Your display name and access code are kept for this browser tab, so joining as the coordinator does not ask for them again. The access code is never placed in the URL. Share the code separately with your team.
           </p>
 
           <button type="submit" disabled={busy}>
@@ -183,7 +183,7 @@ export default function CreateRoomForm() {
 
           {copyStatus && <p role="status" className="hint" style={{ color: 'var(--gm-green)' }}>{copyStatus}</p>}
           <p className="hint" style={{ marginTop: '0.5rem' }}>
-            Join meeting now signs you in as {displayName || 'the host'} with the access code you just entered. Send the invitation link and the access code to other people. They still enter both when they join.
+            Join meeting now signs you in as {displayName || 'the coordinator'} with the access code you just entered. Send the invitation link and the access code to other people. They still enter both when they join.
           </p>
         </div>
       )}

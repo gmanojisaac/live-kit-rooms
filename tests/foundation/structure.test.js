@@ -29,6 +29,8 @@ test('target foundation routes and placeholders exist', async () => {
     'app/api/rooms/[slug]/revoke-invite/route.js',
     'app/api/rooms/[slug]/end/route.js',
     'app/api/rooms/[slug]/participants/route.js',
+    'app/api/rooms/[slug]/transfer-coordinator/route.js',
+    'app/api/rooms/[slug]/claim-coordinator/route.js',
     'app/api/rooms/[slug]/prompt/route.js',
     'app/api/rooms/[slug]/prompt/finalize/route.js',
     'app/api/join/route.js',
@@ -65,6 +67,8 @@ test('target foundation routes and placeholders exist', async () => {
     'lib/rooms/access-validation.js',
     'lib/rooms/owner-auth.js',
     'lib/rooms/moderation.js',
+    'lib/rooms/coordinator-transfer.js',
+    'lib/rooms/coordinator-transfer-client.js',
     'lib/prompts/service.js',
     'lib/prompts/yjs-doc.js',
     'lib/prompts/livekit-provider.js',
@@ -105,7 +109,7 @@ test('supabase migrations exist and define required tables + RLS + phase2 status
     files.map((name) => readFile(path.join(migrationsDir, name), 'utf8')),
   )).join('\n');
 
-  for (const table of ['rooms', 'room_invites', 'prompt_documents', 'prompt_versions', 'audit_events']) {
+  for (const table of ['rooms', 'room_invites', 'prompt_documents', 'prompt_versions', 'audit_events', 'room_coordinator_transfers']) {
     assert.match(sql, new RegExp(`create table if not exists public\\.${table}`), `missing table ${table}`);
     assert.match(sql, new RegExp(`alter table public\\.${table} enable row level security`), `missing RLS on ${table}`);
   }
