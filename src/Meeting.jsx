@@ -48,7 +48,7 @@ export function Meeting({ session }) {
                 <h2>{focusedScreen ? (focusedScreen.participant.name || 'Participant') + '’s screen' : 'Shared screens'}</h2>
                 {focusedScreen && <button onClick={() => setFocusedId(null)}>Return to grid</button>}
               </div>
-              {screens.length === 0 ? <div className="screen-empty">Click Share screen below. Both participants can share at the same time.</div> : (
+              {screens.length === 0 ? <div className="screen-empty">Click Share screen below. Up to six people can share a screen at the same time.</div> : (
                 <div className={'screen-grid' + (focusedScreen ? ' focused' : '')}>
                   {screens.map(track => {
                     const id = track.publication.trackSid;

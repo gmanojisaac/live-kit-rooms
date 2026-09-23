@@ -1,9 +1,35 @@
 node_modules/
 dist/
+.next/
+out/
+
 .env
+.env.*
+!.env.example
 .env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
 *.log
+*.pem
+*.key
 
 test-results/
 playwright-report/
+blob-report/
 .data/
+coverage/
+uploads/
+tmp/
+temp/
+*.jpeg
+*.jpg
+!docs/**/*.jpg
+
+# Local secrets / runtime
+.secrets/
+*.secret
+.vercel
+.codegraph/
+.cursor/

@@ -1,24 +1,36 @@
 {
   "name": "livekit-collaborative-room",
-  "version": "2.0.0",
+  "version": "2.5.0-phase4",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k \"node server.js\" \"vite --host 127.0.0.1\"",
-    "build": "vite build",
-    "start": "node server.js",
-    "test": "node --test tests/server.test.js",
-    "test:browser": "npm run build && playwright test"
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "test": "node --test tests/foundation/*.test.js tests/rooms/*.test.js tests/media/*.test.js tests/prompts/*.test.js",
+    "test:prototype": "node --test tests/server.test.js",
+    "test:all": "npm run test && npm run test:prototype",
+    "test:browser": "playwright test -c playwright.target.config.js",
+    "prototype:dev": "concurrently -k \"node server.js\" \"vite --host 127.0.0.1\"",
+    "prototype:build": "vite build",
+    "prototype:start": "node server.js",
+    "prototype:test": "node --test tests/server.test.js",
+    "prototype:test:browser": "npm run prototype:build && playwright test"
   },
   "dependencies": {
     "@livekit/components-react": "^2.9.0",
     "@livekit/components-styles": "^1.1.0",
+    "@supabase/supabase-js": "^2.116.0",
     "dotenv": "^16.4.5",
     "express": "^4.21.2",
+    "lib0": "^0.2.117",
     "livekit-client": "^2.15.0",
     "livekit-server-sdk": "^2.13.0",
+    "next": "^14.2.35",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "y-protocols": "^1.0.7",
+    "yjs": "^13.6.32"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
