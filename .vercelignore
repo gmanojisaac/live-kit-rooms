@@ -1,0 +1,34 @@
+# Keep the Vercel upload focused on the Next.js target stack.
+# Prototype Vite/Express media remains local/reference only.
+
+.next
+node_modules
+.data
+dist
+coverage
+test-results
+playwright-report
+blob-report
+uploads
+tmp
+temp
+.secrets
+*.log
+.env
+.env.*
+!.env.example
+
+# Prototype (not deployed — LiveKit Cloud is the media SFU)
+src/
+server/
+server.js
+vite.config.js
+index.html
+public/vite.svg
+
+# Local tooling / tests (not required at runtime)
+tests/
+scripts/
+.cursor/
+.github/
+agent-transcripts/
