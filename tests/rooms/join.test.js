@@ -138,6 +138,9 @@ test('valid invitation + access code issues short-lived room-scoped JWT', async 
   assert.equal(admitted.participant.displayName, 'Arjun');
   assert.match(admitted.participant.identity, /^[0-9a-f-]{36}$/i);
   assert.notEqual(admitted.participant.identity, 'Arjun');
+  assert.ok(admitted.participant.rejoinToken);
+  assert.match(admitted.participant.rejoinToken, /^[A-Za-z0-9_-]{16,}$/);
+  assert.notEqual(admitted.participant.rejoinToken, seed.result._test.rawToken);
   assert.equal(livekitRooms.ensured[0], seed.result.room.slug);
 
   const claims = await verifyParticipantAccessToken(admitted.token, LIVEKIT);

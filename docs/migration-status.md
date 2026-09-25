@@ -34,7 +34,7 @@ Next.js + LiveKit Cloud + Supabase + Vercel + Yjs (LiveKit Data Channels)
 | Invitation model | DONE | Token + SHA-256 hash |
 | Owner session | DONE | HTTP-only signed cookie |
 | Access-code hashing | DONE | scrypt |
-| Join + LiveKit JWT | DONE | `POST /api/rooms/[slug]/join` |
+| Join + LiveKit JWT | DONE | `POST /api/rooms/[slug]/join` + participant rejoin grants (2026-09-25) |
 | Owner moderation | DONE | lock / remove / revoke / end |
 | Media migration (MED-01…08) | DONE IN CODE | Next.js `/room/[slug]` LiveKit workspace |
 | **Yjs / prompt CRDT (COL-01…06)** | **DONE IN CODE** | LiveKit Data Channels transport |

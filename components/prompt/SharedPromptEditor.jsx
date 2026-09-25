@@ -18,6 +18,9 @@ import {
 } from '@/lib/prompts/constants.js';
 import { PromptRunRecorder } from './PromptRunRecorder.jsx';
 
+/** Idle interval after which active editing presence clears. */
+const EDITING_IDLE_MS = 2000;
+
 function formatSavedAgo(savedAt, nowMs) {
   if (!savedAt) return '';
   const seconds = Math.max(0, Math.floor((nowMs - savedAt) / 1000));
@@ -50,6 +53,7 @@ export function SharedPromptEditor({
   const providerRef = useRef(null);
   const snapshotTimerRef = useRef(null);
   const seedTimerRef = useRef(null);
+  const editingIdleTimerRef = useRef(null);
   const applyingRemoteRef = useRef(false);
   const pendingUnsavedRef = useRef(false);
 
@@ -76,6 +80,31 @@ export function SharedPromptEditor({
     || closed
     || Boolean(readOnlyHint)
     || Boolean(selectedVersion);
+
+  const clearEditingIdleTimer = useCallback(() => {
+    if (editingIdleTimerRef.current) {
+      clearTimeout(editingIdleTimerRef.current);
+      editingIdleTimerRef.current = null;
+    }
+  }, []);
+
+  const setLocalEditing = useCallback((isEditing) => {
+    providerRef.current?.setEditing?.(Boolean(isEditing));
+  }, []);
+
+  const markEditingActive = useCallback(() => {
+    if (readOnly) {
+      clearEditingIdleTimer();
+      setLocalEditing(false);
+      return;
+    }
+    setLocalEditing(true);
+    clearEditingIdleTimer();
+    editingIdleTimerRef.current = setTimeout(() => {
+      setLocalEditing(false);
+      editingIdleTimerRef.current = null;
+    }, EDITING_IDLE_MS);
+  }, [readOnly, clearEditingIdleTimer, setLocalEditing]);
 
   const ensureDoc = useCallback(() => {
     if (!docRef.current) {
@@ -293,6 +322,8 @@ export function SharedPromptEditor({
     return () => {
       cancelled = true;
       if (seedTimerRef.current) clearTimeout(seedTimerRef.current);
+      clearEditingIdleTimer();
+      setLocalEditing(false);
       ytext.unobserve(onYText);
       unsubscribe();
       provider.destroy();
@@ -304,20 +335,27 @@ export function SharedPromptEditor({
   useEffect(() => {
     const shouldBlock = locked || closed || Boolean(readOnlyHint);
     providerRef.current?.setReadOnly(shouldBlock);
+    if (shouldBlock || selectedVersion) {
+      clearEditingIdleTimer();
+      setLocalEditing(false);
+    }
     if (closed && pendingUnsavedRef.current) {
       setSaveState('error');
       setStatus('Room closed before the latest snapshot finished saving. Local text is still visible but read-only.');
     }
-  }, [locked, closed, readOnlyHint]);
+  }, [locked, closed, readOnlyHint, selectedVersion, clearEditingIdleTimer, setLocalEditing]);
 
   useEffect(() => () => {
     if (snapshotTimerRef.current) clearTimeout(snapshotTimerRef.current);
-  }, []);
+    clearEditingIdleTimer();
+    setLocalEditing(false);
+  }, [clearEditingIdleTimer, setLocalEditing]);
 
   function onTextChange(event) {
     if (readOnly || applyingRemoteRef.current) return;
     const next = event.target.value.slice(0, MAX_PROMPT_LENGTH);
     setText(next);
+    markEditingActive();
     const ytext = ytextRef.current || ensureDoc().ytext;
     try {
       applyLocalTextDiff(ytext, next, 'local');
@@ -465,6 +503,13 @@ export function SharedPromptEditor({
           <textarea
             value={displayText}
             onChange={onTextChange}
+            onFocus={() => {
+              if (!readOnly) markEditingActive();
+            }}
+            onBlur={() => {
+              clearEditingIdleTimer();
+              setLocalEditing(false);
+            }}
             rows={6}
             disabled={readOnly || busy}
             maxLength={MAX_PROMPT_LENGTH}

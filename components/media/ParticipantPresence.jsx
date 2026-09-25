@@ -9,19 +9,23 @@ import {
 import { Track } from 'livekit-client';
 import { shareStateLabel } from '@/lib/media/screen-share-state.js';
 
-function PresenceChip({ participant }) {
+function PresenceChip({ participant, isCoordinator = false }) {
   const speaking = useIsSpeaking(participant);
   const displayName = (participant.name || '').trim() || 'Participant';
   const sharing = Boolean(participant.isScreenShareEnabled);
 
   return (
     <li
-      className={`presence-chip${speaking ? ' presence-chip--speaking' : ''}`}
+      className={`presence-chip${speaking ? ' presence-chip--speaking' : ''}${isCoordinator ? ' presence-chip--coordinator' : ''}`}
       data-identity={participant.identity}
+      data-coordinator={isCoordinator ? 'true' : undefined}
       style={{ display: 'none' }} // Hidden in visual UI; preserved for test probes
     >
       <span className="presence-chip__name">{displayName}</span>
       {participant.isLocal ? <span className="presence-chip__you"> (you)</span> : null}
+      {isCoordinator ? (
+        <span className="coordinator-badge" data-testid="coordinator-badge">Coordinator</span>
+      ) : null}
       {speaking ? (
         <span className="presence-chip__speaking" aria-label="speaking">
           {' '}
@@ -36,7 +40,7 @@ function PresenceChip({ participant }) {
 /**
  * Participant presence + Live Meet camera tiles (MED-02 / MED-04).
  */
-export function ParticipantPresence() {
+export function ParticipantPresence({ coordinatorIdentity = '' }) {
   const participants = useParticipants();
   const cameras = useTracks(
     [{ source: Track.Source.Camera, withPlaceholder: true }],
@@ -51,17 +55,33 @@ export function ParticipantPresence() {
 
       <ul className="presence-list">
         {participants.map((p) => (
-          <PresenceChip key={p.identity} participant={p} />
+          <PresenceChip
+            key={p.identity}
+            participant={p}
+            isCoordinator={Boolean(coordinatorIdentity) && p.identity === coordinatorIdentity}
+          />
         ))}
       </ul>
 
       <div className="camera-grid" aria-label="Participant cameras">
-        {cameras.map((track) => (
-          <ParticipantTile
-            key={track.participant.identity}
-            trackRef={track}
-          />
-        ))}
+        {cameras.map((track) => {
+          const isCoordinator = Boolean(coordinatorIdentity)
+            && track.participant.identity === coordinatorIdentity;
+          return (
+            <div
+              key={track.participant.identity}
+              className={`camera-tile-wrap${isCoordinator ? ' camera-tile-wrap--coordinator' : ''}`}
+              data-coordinator={isCoordinator ? 'true' : undefined}
+            >
+              <ParticipantTile trackRef={track} />
+              {isCoordinator ? (
+                <span className="coordinator-badge coordinator-badge--tile" data-testid="coordinator-badge-tile">
+                  Coordinator
+                </span>
+              ) : null}
+            </div>
+          );
+        })}
       </div>
     </section>
   );

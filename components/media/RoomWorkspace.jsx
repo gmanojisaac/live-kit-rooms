@@ -25,6 +25,11 @@ import {
   publishCoordinatorTransfer,
 } from '@/lib/rooms/coordinator-transfer-client.js';
 import {
+  COORDINATOR_ROLE_DATA_TOPIC,
+  parseCoordinatorRolePayload,
+  publishCoordinatorRole,
+} from '@/lib/rooms/coordinator-role-client.js';
+import {
   MicIcon,
   CameraIcon,
   PresentIcon,
@@ -37,6 +42,8 @@ import {
   CloseIcon,
   FullscreenIcon,
 } from './LiveMeetIcons.jsx';
+
+const COORDINATOR_NOTICE_MS = 5000;
 
 async function postOwnerAction(slug, path, body = {}) {
   const response = await fetch(`/api/rooms/${encodeURIComponent(slug)}${path}`, {
@@ -93,17 +100,33 @@ export function RoomWorkspace({
   const [localReconnects, setLocalReconnects] = useState(0);
   const [timeStr, setTimeStr] = useState('');
   const [copiedCode, setCopiedCode] = useState(false);
+  const [copiedInvite, setCopiedInvite] = useState('');
   const [hostBusy, setHostBusy] = useState('');
   const [hostMessage, setHostMessage] = useState('');
   const [hostError, setHostError] = useState('');
   const [promptLocked, setPromptLocked] = useState(Boolean(roomMeta?.promptLocked));
   const [inviteRevoked, setInviteRevoked] = useState(false);
   const [coordinatorNotice, setCoordinatorNotice] = useState('');
+  const [coordinatorIdentity, setCoordinatorIdentity] = useState('');
 
   const prevConnRef = useRef(livekitState);
   const focusContainerRef = useRef(null);
   const moreMenuRef = useRef(null);
   const claimInFlightRef = useRef(false);
+  const coordinatorNoticeTimerRef = useRef(null);
+  const lastClaimTokenRef = useRef('');
+  const isCoordinatorRef = useRef(isCoordinator);
+
+  useEffect(() => {
+    isCoordinatorRef.current = isCoordinator;
+  }, [isCoordinator]);
+
+  useEffect(() => () => {
+    if (coordinatorNoticeTimerRef.current) {
+      clearTimeout(coordinatorNoticeTimerRef.current);
+      coordinatorNoticeTimerRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     function updateClock() {
@@ -218,6 +241,40 @@ export function RoomWorkspace({
     setTimeout(() => setCopiedCode(false), 2000);
   }
 
+  function copyInviteLink() {
+    if (typeof window === 'undefined') {
+      setCopiedInvite('Invite link is unavailable for this session.');
+      setTimeout(() => setCopiedInvite(''), 2500);
+      return;
+    }
+    try {
+      const url = new URL(window.location.href);
+      url.hash = '';
+      if (!url.searchParams.get('invite')) {
+        setCopiedInvite('Invite link is unavailable for this session.');
+        setTimeout(() => setCopiedInvite(''), 2500);
+        return;
+      }
+      navigator.clipboard?.writeText?.(url.toString());
+      setCopiedInvite('Invite link copied.');
+      setTimeout(() => setCopiedInvite(''), 2500);
+    } catch {
+      setCopiedInvite('Invite link is unavailable for this session.');
+      setTimeout(() => setCopiedInvite(''), 2500);
+    }
+  }
+
+  function showCoordinatorPromotionNotice() {
+    if (coordinatorNoticeTimerRef.current) {
+      clearTimeout(coordinatorNoticeTimerRef.current);
+    }
+    setCoordinatorNotice('You are now the coordinator for this meeting.');
+    coordinatorNoticeTimerRef.current = setTimeout(() => {
+      setCoordinatorNotice('');
+      coordinatorNoticeTimerRef.current = null;
+    }, COORDINATOR_NOTICE_MS);
+  }
+
   function toggleTab(tab) {
     setActiveDrawerTab((prev) => (prev === tab ? null : tab));
     setShowMoreMenu(false);
@@ -235,6 +292,48 @@ export function RoomWorkspace({
     setIsCoordinator(Boolean(roomMeta?.isCoordinator ?? roomMeta?.isOwner));
   }, [roomMeta?.isCoordinator, roomMeta?.isOwner]);
 
+  const announceCoordinatorRole = useCallback(async (destinationIdentities) => {
+    if (!localParticipant?.identity || !isCoordinatorRef.current) return;
+    try {
+      await publishCoordinatorRole(localParticipant, localParticipant.identity, {
+        destinationIdentities,
+      });
+      setCoordinatorIdentity(localParticipant.identity);
+    } catch {
+      // informational only
+    }
+  }, [localParticipant]);
+
+  useEffect(() => {
+    if (!isCoordinator || !localParticipant?.identity) return undefined;
+    setCoordinatorIdentity(localParticipant.identity);
+    announceCoordinatorRole();
+    return undefined;
+  }, [isCoordinator, localParticipant?.identity, announceCoordinatorRole]);
+
+  useEffect(() => {
+    if (!room) return undefined;
+
+    const onParticipantConnected = (participant) => {
+      if (!isCoordinatorRef.current || !participant?.identity) return;
+      announceCoordinatorRole([participant.identity]);
+    };
+
+    const onParticipantDisconnected = (participant) => {
+      if (!participant?.identity) return;
+      setCoordinatorIdentity((current) => (
+        current === participant.identity ? '' : current
+      ));
+    };
+
+    room.on(RoomEvent.ParticipantConnected, onParticipantConnected);
+    room.on(RoomEvent.ParticipantDisconnected, onParticipantDisconnected);
+    return () => {
+      room.off(RoomEvent.ParticipantConnected, onParticipantConnected);
+      room.off(RoomEvent.ParticipantDisconnected, onParticipantDisconnected);
+    };
+  }, [room, announceCoordinatorRole]);
+
   const refreshCoordinatorStatus = useCallback(async () => {
     if (!slug) return;
     try {
@@ -245,45 +344,65 @@ export function RoomWorkspace({
       const data = await response.json();
       const next = Boolean(data.isCoordinator ?? data.isOwner ?? data.room?.isCoordinator ?? data.room?.isOwner);
       setIsCoordinator(next);
+      if (!next && localParticipant?.identity && coordinatorIdentity === localParticipant.identity) {
+        setCoordinatorIdentity('');
+      }
       if (typeof data.room?.promptLocked === 'boolean') {
         setPromptLocked(data.room.promptLocked);
       }
     } catch {
       // non-fatal
     }
-  }, [slug]);
+  }, [slug, localParticipant?.identity, coordinatorIdentity]);
 
   const acceptCoordinatorTransfer = useCallback(async (payload) => {
     if (!payload?.claimToken || !payload?.slug) return;
     if (payload.slug !== slug) return;
     if (!localIdentity) return;
     if (claimInFlightRef.current) return;
+    if (lastClaimTokenRef.current === payload.claimToken) return;
     claimInFlightRef.current = true;
+    lastClaimTokenRef.current = payload.claimToken;
     try {
       const result = await claimCoordinatorRole(payload.slug, payload.claimToken, localIdentity);
       if (!result.ok) {
+        lastClaimTokenRef.current = '';
         setHostError(result.payload?.error || 'Unable to accept coordinator role.');
         return;
       }
       setIsCoordinator(true);
-      setCoordinatorNotice('You are now the coordinator for this meeting.');
+      if (localParticipant?.identity) {
+        setCoordinatorIdentity(localParticipant.identity);
+        publishCoordinatorRole(localParticipant, localParticipant.identity).catch(() => {});
+      }
+      showCoordinatorPromotionNotice();
       setHostMessage('You are now the coordinator for this meeting.');
       setHostError('');
     } catch {
+      lastClaimTokenRef.current = '';
       setHostError('Unable to accept coordinator role.');
     } finally {
       claimInFlightRef.current = false;
     }
-  }, [slug, localIdentity]);
+  }, [slug, localIdentity, localParticipant]);
 
   useEffect(() => {
     if (!room) return undefined;
 
     const onData = (payload, _participant, _kind, topic) => {
-      if (topic && topic !== COORDINATOR_TRANSFER_DATA_TOPIC) return;
-      const parsed = parseCoordinatorTransferPayload(payload);
-      if (!parsed) return;
-      acceptCoordinatorTransfer(parsed);
+      if (!topic || topic === COORDINATOR_TRANSFER_DATA_TOPIC) {
+        const parsed = parseCoordinatorTransferPayload(payload);
+        if (parsed) {
+          acceptCoordinatorTransfer(parsed);
+          return;
+        }
+      }
+      if (!topic || topic === COORDINATOR_ROLE_DATA_TOPIC) {
+        const role = parseCoordinatorRolePayload(payload);
+        if (role?.coordinatorIdentity) {
+          setCoordinatorIdentity(role.coordinatorIdentity);
+        }
+      }
     };
 
     room.on(RoomEvent.DataReceived, onData);
@@ -291,6 +410,16 @@ export function RoomWorkspace({
       room.off(RoomEvent.DataReceived, onData);
     };
   }, [room, acceptCoordinatorTransfer]);
+
+  useEffect(() => {
+    if (
+      !isCoordinator
+      && localParticipant?.identity
+      && coordinatorIdentity === localParticipant.identity
+    ) {
+      setCoordinatorIdentity('');
+    }
+  }, [isCoordinator, localParticipant?.identity, coordinatorIdentity]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return undefined;
@@ -425,6 +554,17 @@ export function RoomWorkspace({
         </div>
       ) : null}
 
+      {coordinatorNotice ? (
+        <div
+          className="coordinator-toast"
+          role="status"
+          aria-live="polite"
+          data-testid="coordinator-promotion-toast"
+        >
+          {coordinatorNotice}
+        </div>
+      ) : null}
+
       <div className={`meeting-content${drawerOpen ? ' with-chat' : ''}`}>
         <main className="meeting-stage" ref={focusContainerRef}>
           <div className="meeting-stage-topbar">
@@ -452,7 +592,7 @@ export function RoomWorkspace({
             onRequestFullscreen={requestFullscreen}
           />
           <FocusQualityController focusedId={focusedId} />
-          <ParticipantPresence />
+          <ParticipantPresence coordinatorIdentity={coordinatorIdentity} />
         </main>
 
         {/* Keep drawer mounted so chat history + prompt Yjs stay alive when closed */}
@@ -484,6 +624,8 @@ export function RoomWorkspace({
                   const initial = (p.name || 'P')[0]?.toUpperCase() || 'P';
                   const canRemove = isCoordinator && !p.isLocal;
                   const canTransfer = isCoordinator && !p.isLocal;
+                  const isRoleCoordinator = Boolean(coordinatorIdentity)
+                    && p.identity === coordinatorIdentity;
                   return (
                     <li key={p.identity} className="gm-people-item">
                       <div className="gm-people-info">
@@ -491,6 +633,11 @@ export function RoomWorkspace({
                         <div className="gm-people-name">
                           <span>{(p.name || '').trim() || 'Participant'}</span>
                           {p.isLocal ? <span className="you"> (You)</span> : null}
+                          {isRoleCoordinator ? (
+                            <span className="coordinator-badge" data-testid="coordinator-badge">
+                              Coordinator
+                            </span>
+                          ) : null}
                         </div>
                       </div>
                       <div className="gm-people-icons">
@@ -529,9 +676,9 @@ export function RoomWorkspace({
                   );
                 })}
               </ul>
-              {(isCoordinator || coordinatorNotice) && (hostError || hostMessage || coordinatorNotice) ? (
+              {(isCoordinator) && (hostError || hostMessage) ? (
                 <p className={hostError ? 'error' : 'hint'} role={hostError ? 'alert' : 'status'} style={{ padding: '0 1rem' }}>
-                  {hostError || hostMessage || coordinatorNotice}
+                  {hostError || hostMessage}
                 </p>
               ) : null}
             </div>
@@ -568,15 +715,37 @@ export function RoomWorkspace({
               <div className="gm-info-block">
                 <h4>Joining info</h4>
                 <p className="hint">
-                  Room code: <code>{slug}</code>
+                  Meeting ID: <code>{slug}</code>
                 </p>
-                <button
-                  type="button"
-                  onClick={copyMeetingCode}
-                  className="gm-btn-primary gm-info-copy"
-                >
-                  {copiedCode ? 'Code copied!' : 'Copy room code'}
-                </button>
+                <p className="hint gm-info-note">
+                  The meeting ID is for reference only. Joining requires the invitation link and access code.
+                </p>
+                <p className="hint gm-info-note">
+                  Invitation link + access code are required to join.
+                </p>
+                <div className="gm-info-actions">
+                  <button
+                    type="button"
+                    onClick={copyMeetingCode}
+                    className="gm-btn-primary gm-info-copy"
+                    data-testid="copy-meeting-id"
+                  >
+                    {copiedCode ? 'Meeting ID copied!' : 'Copy meeting ID'}
+                  </button>
+                  {isCoordinator ? (
+                    <button
+                      type="button"
+                      onClick={copyInviteLink}
+                      className="gm-btn-primary gm-info-copy"
+                      data-testid="copy-invite-link"
+                    >
+                      Copy invite link
+                    </button>
+                  ) : null}
+                </div>
+                {copiedInvite ? (
+                  <p className="hint" role="status" data-testid="invite-link-feedback">{copiedInvite}</p>
+                ) : null}
                 <p className="hint gm-info-note">
                   Access codes are kept separate from links for security.
                 </p>
@@ -663,7 +832,7 @@ export function RoomWorkspace({
             }}
             role="button"
             tabIndex={0}
-            title="Click to copy meeting code"
+            title="Click to copy meeting ID (reference only)"
           >
             <span>{slug}</span>
             {copiedCode ? <span className="gm-copied">Copied</span> : null}

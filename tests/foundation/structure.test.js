@@ -59,16 +59,19 @@ test('target foundation routes and placeholders exist', async () => {
     'lib/security/server-only.js',
     'lib/security/access-code.js',
     'lib/security/invite-token.js',
+    'lib/security/rejoin-token.js',
     'lib/security/owner-session.js',
     'lib/security/rate-limit.js',
     'lib/rooms/service.js',
     'lib/rooms/join.js',
     'lib/rooms/join-handler.js',
     'lib/rooms/access-validation.js',
+    'lib/rooms/rejoin-storage.js',
     'lib/rooms/owner-auth.js',
     'lib/rooms/moderation.js',
     'lib/rooms/coordinator-transfer.js',
     'lib/rooms/coordinator-transfer-client.js',
+    'lib/rooms/coordinator-role-client.js',
     'lib/prompts/service.js',
     'lib/prompts/yjs-doc.js',
     'lib/prompts/livekit-provider.js',
@@ -109,7 +112,7 @@ test('supabase migrations exist and define required tables + RLS + phase2 status
     files.map((name) => readFile(path.join(migrationsDir, name), 'utf8')),
   )).join('\n');
 
-  for (const table of ['rooms', 'room_invites', 'prompt_documents', 'prompt_versions', 'audit_events', 'room_coordinator_transfers']) {
+  for (const table of ['rooms', 'room_invites', 'prompt_documents', 'prompt_versions', 'audit_events', 'room_coordinator_transfers', 'room_participant_rejoin_grants']) {
     assert.match(sql, new RegExp(`create table if not exists public\\.${table}`), `missing table ${table}`);
     assert.match(sql, new RegExp(`alter table public\\.${table} enable row level security`), `missing RLS on ${table}`);
   }
