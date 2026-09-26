@@ -92,7 +92,6 @@ export async function POST(request, { params }) {
 
     }
 
-  });
+  }, { requireModeratorToken: true });
 
 }
-

@@ -24,6 +24,8 @@ import {
 
   removeRoomParticipant,
 
+  grantRoomAdmin,
+
   revokeRoomInvitation,
 
   endRoom,
@@ -171,6 +173,26 @@ function createMockLiveKit({ participants = [] } = {}) {
       state.participants.splice(idx, 1);
 
       state.removed.push({ roomName, identity });
+
+    },
+
+    async updateParticipantMetadata(roomName, identity, metadata) {
+
+      const participant = state.participants.find((p) => p.identity === identity);
+
+      if (!participant) {
+
+        const err = new Error('not found');
+
+        err.status = 404;
+
+        throw err;
+
+      }
+
+      participant.metadata = metadata;
+
+      return { ...participant, roomName };
 
     },
 
@@ -569,6 +591,64 @@ test('owner can remove participant; non-owner cannot; unknown/cross-room rejecte
     (e) => e instanceof ModerationError && e.httpStatus === 404,
 
   );
+
+});
+
+
+
+test('admin can promote a connected participant to admin; metadata and audit update', async (t) => {
+
+  const { result, repository, ownerId } = await seedOwnedRoom(t);
+
+  const livekit = createMockLiveKit({
+
+    participants: [
+
+      { identity: 'p-creator', name: 'Creator', metadata: '{"role":"admin"}' },
+
+      { identity: 'p-guest', name: 'Guest', metadata: '{"role":"participant"}' },
+
+    ],
+
+  });
+
+  const room = await repository.getRoomBySlug(result.room.slug);
+
+  const granted = await grantRoomAdmin({
+
+    room,
+
+    ownerId,
+
+    actorIdentity: 'p-creator',
+
+    participantIdentity: 'p-guest',
+
+    repository,
+
+    livekitRooms: livekit,
+
+  });
+
+  assert.equal(granted.granted, true);
+
+  assert.equal(granted.participantIdentity, 'p-guest');
+
+  assert.deepEqual(JSON.parse(livekit.state.participants[1].metadata), {
+
+    role: 'admin',
+
+  });
+
+  const events = await repository.listAuditEvents(room.id);
+
+  const grant = events.find((e) => e.event_type === AUDIT_EVENT.PARTICIPANT_ADMIN_GRANTED);
+
+  assert.ok(grant);
+
+  assert.equal(grant.actor_id, 'p-creator');
+
+  assert.equal(grant.metadata_minimal.participantIdentity, 'p-guest');
 
 });
 
@@ -987,4 +1067,3 @@ test('audit events omit secrets across moderation actions', async (t) => {
   assert.match(blob, /room_ended/);
 
 });
-

@@ -1808,6 +1808,20 @@ main.room-page:has(.media-workspace) .join-section {
   font-size: 0.85rem;
 }
 
+.gm-people-role {
+  display: inline-block;
+  margin-top: 0.25rem;
+  padding: 0.12rem 0.45rem;
+  border: 1px solid rgba(96, 165, 250, 0.35);
+  border-radius: 999px;
+  background: rgba(96, 165, 250, 0.12);
+  color: var(--gm-blue);
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
 .gm-people-icons {
   display: flex;
   align-items: center;
@@ -1825,6 +1839,23 @@ main.room-page:has(.media-workspace) .join-section {
   background: transparent;
   color: var(--gm-red);
   cursor: pointer;
+}
+.gm-people-admin {
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 0.25rem 0.55rem;
+  border-radius: 12px;
+  border: 1px solid rgba(96, 165, 250, 0.45);
+  background: rgba(96, 165, 250, 0.12);
+  color: var(--gm-blue);
+  cursor: pointer;
+}
+.gm-people-admin:hover:not(:disabled) {
+  background: rgba(96, 165, 250, 0.2);
+}
+.gm-people-admin:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 .gm-people-remove:hover:not(:disabled) {
   background: var(--gm-red-subtle);

@@ -58,7 +58,7 @@ export function ParticipantPresence() {
       <div className="camera-grid" aria-label="Participant cameras">
         {cameras.map((track) => (
           <ParticipantTile
-            key={track.participant.identity}
+            key={track.publication?.trackSid || `${track.participant?.identity || 'p'}-${track.source || 'cam'}`}
             trackRef={track}
           />
         ))}

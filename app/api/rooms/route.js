@@ -5,6 +5,7 @@ import {
   createRateLimiter,
 } from '../../../lib/security/rate-limit.js';
 import { ownerSessionCookieOptions } from '../../../lib/security/owner-session.js';
+import { createCreatorJoinToken } from '../../../lib/security/room-role-token.js';
 import { redactForLog } from '../../../lib/security/redact.js';
 import {
   getOwnerSessionToken,
@@ -101,10 +102,18 @@ export async function POST(request) {
     });
 
     const { publicResult, sessionCookie } = stripInternalCreateResult(result);
+    const ownerJoinToken = createCreatorJoinToken({
+      secret: policy.ownerSessionSecret,
+      ownerId: result.owner.id,
+      roomId: result.room.id,
+      slug: result.room.slug,
+    });
     const response = NextResponse.json({
       room: publicResult.room,
       invitationUrl: publicResult.invitationUrl,
+      accessCode: publicResult.accessCode,
       owner: publicResult.owner,
+      ownerJoinToken,
     });
     response.headers.set('Cache-Control', 'no-store');
 

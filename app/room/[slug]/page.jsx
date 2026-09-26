@@ -1,14 +1,10 @@
 import Link from 'next/link';
-import { cookies } from 'next/headers';
 import { getRoomBySlug } from '@/lib/rooms/lookup.js';
 import { createRoomRepository } from '@/lib/rooms/repository.js';
-import { verifyOwnerSession, OWNER_SESSION_COOKIE } from '@/lib/security/owner-session.js';
-import { getRoomPolicy } from '@/lib/rooms/policy.js';
 import { toPublicRoom } from '@/lib/rooms/status.js';
 import { ensureRoomNotStaleActive } from '@/lib/rooms/owner-auth.js';
 import { PromptPlaceholder } from '@/components/prompt/PromptPlaceholder';
 import JoinRoomForm from '@/components/rooms/JoinRoomForm';
-import OwnerModerationPanel from '@/components/rooms/OwnerModerationPanel';
 import LiveMeetHeader from '@/components/media/LiveMeetHeader';
 
 export const dynamic = 'force-dynamic';
@@ -32,21 +28,7 @@ async function loadRoomForPage(slug) {
     ? await repository.getPromptDocument(refreshed.id)
     : null;
 
-  let isOwner = false;
-  try {
-    const policy = getRoomPolicy();
-    const cookieStore = cookies();
-    const token = cookieStore.get(OWNER_SESSION_COOKIE)?.value;
-    if (token && policy.ownerSessionSecret) {
-      const session = verifyOwnerSession(token, policy.ownerSessionSecret);
-      isOwner = Boolean(session?.ownerId && session.ownerId === refreshed.owner_id);
-    }
-  } catch {
-    isOwner = false;
-  }
-
   const publicRoom = toPublicRoom(refreshed, {
-    isOwner,
     promptLocked: Boolean(promptDoc?.is_locked),
   });
 
@@ -99,15 +81,6 @@ export default async function RoomPage({ params, searchParams }) {
               {room.expiresAt ? ` · expires ${new Date(room.expiresAt).toLocaleString()}` : ''}
               {room.promptLocked ? ' · prompt locked' : ''}
             </p>
-
-            {room.isOwner && !inviteToken ? (
-              <details className="gm-owner-accordion">
-                <summary>Host moderation controls</summary>
-                <div className="gm-owner-accordion__body">
-                  <OwnerModerationPanel slug={room.slug} initialRoom={room} />
-                </div>
-              </details>
-            ) : null}
 
             {!inactive ? (
               <section className="join-section">

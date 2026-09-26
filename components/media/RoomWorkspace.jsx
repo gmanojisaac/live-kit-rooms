@@ -18,6 +18,7 @@ import { NetworkQualityBanner } from './NetworkQualityBanner.jsx';
 import { MediaDiagnostics } from './MediaDiagnostics.jsx';
 import { FocusQualityController } from './FocusQualityController.jsx';
 import { CollaborativePromptEditor } from '@/components/prompt/CollaborativePromptEditor.jsx';
+import { PROMPT_META_TOPIC } from '@/lib/prompts/constants.js';
 import {
   MicIcon,
   CameraIcon,
@@ -32,11 +33,39 @@ import {
   FullscreenIcon,
 } from './LiveMeetIcons.jsx';
 
-async function postOwnerAction(slug, path, body = {}) {
+import { readOwnerJoinHandoff } from '@/lib/rooms/owner-join-handoff.js';
+
+function roleFromMetadata(participant) {
+  if (!participant?.metadata || typeof participant.metadata !== 'string') {
+    return 'participant';
+  }
+
+  try {
+    const metadata = JSON.parse(participant.metadata);
+    return metadata?.role === 'admin' ? 'admin' : 'participant';
+  } catch {
+    return 'participant';
+  }
+}
+
+function participantRole(participant, { localIdentity, localRole } = {}) {
+  const metadataRole = roleFromMetadata(participant);
+  if (participant?.identity && participant.identity === localIdentity) {
+    return localRole === 'admin' || metadataRole === 'admin' ? 'admin' : 'participant';
+  }
+  return metadataRole;
+}
+
+async function postOwnerAction(slug, path, body = {}, moderatorToken = null) {
+  const headers = { 'content-type': 'application/json' };
+  if (moderatorToken) {
+    headers['x-lkr-moderator-token'] = moderatorToken;
+  }
+
   const response = await fetch(`/api/rooms/${encodeURIComponent(slug)}${path}`, {
     method: 'POST',
     credentials: 'same-origin',
-    headers: { 'content-type': 'application/json' },
+    headers,
     body: JSON.stringify(body),
   });
   const payload = await response.json().catch(() => ({}));
@@ -65,7 +94,6 @@ export function RoomWorkspace({
     isScreenShareEnabled = false,
   } = useLocalParticipant();
 
-  const isOwner = Boolean(roomMeta?.isOwner);
   const [focusedId, setFocusedId] = useState(null);
   const [activeDrawerTab, setActiveDrawerTab] = useState(null); // 'people' | 'chat' | 'activities' | 'info' | null
   const [showMoreMenu, setShowMoreMenu] = useState(false);
@@ -74,15 +102,34 @@ export function RoomWorkspace({
   const [localReconnects, setLocalReconnects] = useState(0);
   const [timeStr, setTimeStr] = useState('');
   const [copiedCode, setCopiedCode] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
+  const [copiedAccessCode, setCopiedAccessCode] = useState(false);
+  const [copiedAll, setCopiedAll] = useState(false);
   const [hostBusy, setHostBusy] = useState('');
   const [hostMessage, setHostMessage] = useState('');
   const [hostError, setHostError] = useState('');
   const [promptLocked, setPromptLocked] = useState(Boolean(roomMeta?.promptLocked));
   const [inviteRevoked, setInviteRevoked] = useState(false);
+  const [delegatedModeratorToken, setDelegatedModeratorToken] = useState(
+    admission?.moderatorToken || null,
+  );
 
   const prevConnRef = useRef(livekitState);
   const focusContainerRef = useRef(null);
   const moreMenuRef = useRef(null);
+  const roomSlug = admission?.room?.slug || roomMeta?.slug || '';
+  const localIdentity = admission?.participant?.identity || localParticipant?.identity || '';
+  const localRole = admission?.participant?.role === 'admin' || roleFromMetadata(localParticipant) === 'admin'
+    ? 'admin'
+    : 'participant';
+  const moderatorToken = admission?.moderatorToken || delegatedModeratorToken;
+  const isOwner = Boolean(localRole === 'admin' && moderatorToken);
+
+  useEffect(() => {
+    if (admission?.moderatorToken) {
+      setDelegatedModeratorToken(admission.moderatorToken);
+    }
+  }, [admission?.moderatorToken]);
 
   useEffect(() => {
     function updateClock() {
@@ -93,6 +140,40 @@ export function RoomWorkspace({
     const interval = setInterval(updateClock, 1000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    if (localRole !== 'admin' || moderatorToken || !roomSlug || !localIdentity || !admission?.token) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    fetch(`/api/rooms/${encodeURIComponent(roomSlug)}/claim-admin`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        participantIdentity: localIdentity,
+        token: admission.token,
+      }),
+    })
+      .then((response) => response.json().then((payload) => ({ ok: response.ok, payload })))
+      .then((result) => {
+        if (cancelled) return;
+        if (result.ok && result.payload?.moderatorToken) {
+          setDelegatedModeratorToken(result.payload.moderatorToken);
+          setHostMessage('Admin controls enabled.');
+        } else {
+          setHostError(result.payload?.error || 'Unable to enable admin controls.');
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setHostError('Unable to enable admin controls.');
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [admission?.token, localIdentity, localRole, moderatorToken, roomSlug]);
 
   useEffect(() => {
     const prev = prevConnRef.current;
@@ -197,6 +278,40 @@ export function RoomWorkspace({
     setTimeout(() => setCopiedCode(false), 2000);
   }
 
+  function copyMeetingLink() {
+    if (typeof window === 'undefined') return;
+    const link = window.location.href;
+    navigator.clipboard?.writeText?.(link);
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2000);
+  }
+
+  function copyAccessCode() {
+    const handoff = typeof window !== 'undefined' ? readOwnerJoinHandoff(slug) : null;
+    const code = handoff?.accessCode;
+    if (!code) return;
+    navigator.clipboard?.writeText?.(code);
+    setCopiedAccessCode(true);
+    setTimeout(() => setCopiedAccessCode(false), 2000);
+  }
+
+  function copyAllInfo() {
+    if (typeof window === 'undefined') return;
+    const handoff = readOwnerJoinHandoff(slug);
+    const link = window.location.href;
+    const parts = [
+      `Meeting: ${title}`,
+      `Link: ${link}`,
+      `Room Code: ${slug}`,
+    ];
+    if (handoff?.accessCode) {
+      parts.push(`Access Code: ${handoff.accessCode}`);
+    }
+    navigator.clipboard?.writeText?.(parts.join('\n'));
+    setCopiedAll(true);
+    setTimeout(() => setCopiedAll(false), 2000);
+  }
+
   function toggleTab(tab) {
     setActiveDrawerTab((prev) => (prev === tab ? null : tab));
     setShowMoreMenu(false);
@@ -204,7 +319,7 @@ export function RoomWorkspace({
 
   const displayName = admission?.participant?.displayName || 'Participant';
   const title = roomMeta?.title || admission?.room?.title || 'Meeting';
-  const slug = admission?.room?.slug || roomMeta?.slug || '';
+  const slug = roomSlug;
   const drawerOpen = Boolean(activeDrawerTab);
 
   async function runHostAction(path, body, { confirmMessage, onSuccess } = {}) {
@@ -216,7 +331,7 @@ export function RoomWorkspace({
     setHostError('');
     setHostMessage('');
     try {
-      const result = await postOwnerAction(slug, path, body);
+      const result = await postOwnerAction(slug, path, body, moderatorToken);
       if (!result.ok) {
         setHostError(result.payload?.error || 'Unable to complete that action.');
         return;
@@ -324,7 +439,12 @@ export function RoomWorkspace({
               <ul className="gm-people-list">
                 {participants.map((p) => {
                   const initial = (p.name || 'P')[0]?.toUpperCase() || 'P';
+                  const role = participantRole(p, {
+                    localIdentity,
+                    localRole,
+                  });
                   const canRemove = isOwner && !p.isLocal;
+                  const canMakeAdmin = isOwner && !p.isLocal && role !== 'admin';
                   return (
                     <li key={p.identity} className="gm-people-item">
                       <div className="gm-people-info">
@@ -332,11 +452,27 @@ export function RoomWorkspace({
                         <div className="gm-people-name">
                           <span>{(p.name || '').trim() || 'Participant'}</span>
                           {p.isLocal ? <span className="you"> (You)</span> : null}
+                          {role === 'admin' ? <span className="gm-people-role">Admin</span> : null}
                         </div>
                       </div>
                       <div className="gm-people-icons">
                         <MicIcon muted={!p.isMicrophoneEnabled} size={18} />
                         {p.isScreenShareEnabled ? <PresentIcon size={16} /> : null}
+                        {canMakeAdmin ? (
+                          <button
+                            type="button"
+                            className="gm-people-admin"
+                            disabled={Boolean(hostBusy)}
+                            onClick={() => runHostAction('/admin', {
+                              participantIdentity: p.identity,
+                            }, {
+                              confirmMessage: `Make ${(p.name || '').trim() || 'this participant'} an admin?`,
+                              onSuccess: () => setHostMessage(`${(p.name || '').trim() || 'Participant'} is now an admin.`),
+                            })}
+                          >
+                            {hostBusy === '/admin' ? '…' : 'Make admin'}
+                          </button>
+                        ) : null}
                         {canRemove ? (
                           <button
                             type="button"
@@ -395,18 +531,122 @@ export function RoomWorkspace({
             >
               <div className="gm-info-block">
                 <h4>Joining info</h4>
-                <p className="hint">
-                  Room code: <code>{slug}</code>
-                </p>
-                <button
-                  type="button"
-                  onClick={copyMeetingCode}
-                  className="gm-btn-primary gm-info-copy"
-                >
-                  {copiedCode ? 'Code copied!' : 'Copy room code'}
-                </button>
-                <p className="hint gm-info-note">
-                  Access codes are kept separate from links for security.
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginTop: '0.75rem' }}>
+                  <div>
+                    <label style={{ fontSize: '0.8rem', color: 'var(--gm-text-muted)', display: 'block', marginBottom: '0.25rem' }}>
+                      Meeting Link
+                    </label>
+                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                      <input
+                        readOnly
+                        value={typeof window !== 'undefined' ? window.location.href : ''}
+                        onFocus={(e) => e.target.select()}
+                        style={{
+                          flex: 1,
+                          fontSize: '0.8rem',
+                          padding: '0.4rem 0.6rem',
+                          background: 'var(--gm-surface-card)',
+                          border: '1px solid var(--gm-border-subtle)',
+                          borderRadius: '6px',
+                          color: 'var(--gm-text-main)',
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={copyMeetingLink}
+                        className="gm-btn-primary"
+                        style={{ whiteSpace: 'nowrap', padding: '0.4rem 0.8rem', fontSize: '0.8rem' }}
+                      >
+                        {copiedLink ? 'Link copied!' : 'Copy Link'}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label style={{ fontSize: '0.8rem', color: 'var(--gm-text-muted)', display: 'block', marginBottom: '0.25rem' }}>
+                      Room Code
+                    </label>
+                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                      <input
+                        readOnly
+                        value={slug}
+                        onFocus={(e) => e.target.select()}
+                        style={{
+                          flex: 1,
+                          fontFamily: 'monospace',
+                          fontSize: '0.85rem',
+                          padding: '0.4rem 0.6rem',
+                          background: 'var(--gm-surface-card)',
+                          border: '1px solid var(--gm-border-subtle)',
+                          borderRadius: '6px',
+                          color: 'var(--gm-text-main)',
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={copyMeetingCode}
+                        className="gm-btn-primary"
+                        style={{ whiteSpace: 'nowrap', padding: '0.4rem 0.8rem', fontSize: '0.8rem' }}
+                      >
+                        {copiedCode ? 'Code copied!' : 'Copy Code'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {typeof window !== 'undefined' && readOwnerJoinHandoff(slug)?.accessCode ? (
+                    <div>
+                      <label style={{ fontSize: '0.8rem', color: 'var(--gm-text-muted)', display: 'block', marginBottom: '0.25rem' }}>
+                        Host Access Code
+                      </label>
+                      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                        <input
+                          readOnly
+                          value={readOwnerJoinHandoff(slug).accessCode}
+                          onFocus={(e) => e.target.select()}
+                          style={{
+                            flex: 1,
+                            fontFamily: 'monospace',
+                            fontSize: '0.85rem',
+                            fontWeight: 600,
+                            padding: '0.4rem 0.6rem',
+                            background: 'var(--gm-surface-card)',
+                            border: '1px solid var(--gm-border-subtle)',
+                            borderRadius: '6px',
+                            color: 'var(--gm-blue)',
+                          }}
+                        />
+                        <button
+                          type="button"
+                          onClick={copyAccessCode}
+                          className="gm-btn-primary"
+                          style={{ whiteSpace: 'nowrap', padding: '0.4rem 0.8rem', fontSize: '0.8rem' }}
+                        >
+                          {copiedAccessCode ? 'Code copied!' : 'Copy Code'}
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <button
+                    type="button"
+                    onClick={copyAllInfo}
+                    style={{
+                      marginTop: '0.25rem',
+                      padding: '0.5rem',
+                      background: 'var(--gm-surface-elevated)',
+                      border: '1px solid var(--gm-border-subtle)',
+                      borderRadius: '8px',
+                      color: 'var(--gm-text-main)',
+                      fontSize: '0.825rem',
+                      cursor: 'pointer',
+                      fontWeight: 500,
+                    }}
+                  >
+                    {copiedAll ? '✓ All Joining Info Copied!' : '📋 Copy Full Info (Link + Code)'}
+                  </button>
+                </div>
+                <p className="hint gm-info-note" style={{ marginTop: '0.75rem' }}>
+                  Share the link or room code with participants so they can join.
                 </p>
               </div>
 
@@ -425,6 +665,16 @@ export function RoomWorkspace({
                         const next = Boolean(payload.locked);
                         setPromptLocked(next);
                         setHostMessage(next ? 'Prompt editing locked.' : 'Prompt editing unlocked.');
+                        if (room?.localParticipant?.publishData) {
+                          const bytes = new TextEncoder().encode(JSON.stringify({
+                            locked: next,
+                            roomStatus: payload.roomStatus || 'active',
+                          }));
+                          room.localParticipant.publishData(bytes, {
+                            reliable: true,
+                            topic: PROMPT_META_TOPIC,
+                          }).catch(() => {});
+                        }
                       },
                     })}
                   >

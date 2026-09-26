@@ -88,7 +88,6 @@ export async function POST(request, { params }) {
 
     }
 
-  });
+  }, { allowModeratorToken: true });
 
 }
-
