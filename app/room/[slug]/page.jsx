@@ -100,7 +100,7 @@ export default async function RoomPage({ params, searchParams }) {
               {room.promptLocked ? ' · prompt locked' : ''}
             </p>
 
-            {room.isOwner ? (
+            {room.isOwner && !inviteToken ? (
               <details className="gm-owner-accordion">
                 <summary>Host moderation controls</summary>
                 <div className="gm-owner-accordion__body">

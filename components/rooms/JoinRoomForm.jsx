@@ -313,7 +313,10 @@ export default function JoinRoomForm({ slug, inviteToken, roomMeta }) {
                 name="displayName"
                 placeholder="What's your name?"
                 value={displayName}
-                onChange={(e) => setDisplayName(e.target.value)}
+                onChange={(e) => {
+                  setDisplayName(e.target.value);
+                  if (error) setError('');
+                }}
                 required
                 maxLength={40}
                 autoComplete="nickname"
@@ -327,7 +330,10 @@ export default function JoinRoomForm({ slug, inviteToken, roomMeta }) {
                 type="password"
                 placeholder="Enter access code"
                 value={accessCode}
-                onChange={(e) => setAccessCode(e.target.value)}
+                onChange={(e) => {
+                  setAccessCode(e.target.value);
+                  if (error) setError('');
+                }}
                 required
                 minLength={12}
                 autoComplete="off"
