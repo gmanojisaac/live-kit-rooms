@@ -11,23 +11,28 @@ export default function PublicHomePage() {
 
   function handleJoinByCode(e) {
     e.preventDefault();
-    const trimmed = meetingCode.trim();
-    if (!trimmed) return;
-    // Extract slug if user pasted full URL
-    let slug = trimmed;
+    const raw = meetingCode.trim();
+    if (!raw) return;
     try {
-      if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-        const url = new URL(trimmed);
-        const segments = url.pathname.split('/').filter(Boolean);
-        if (segments[0] === 'room' && segments[1]) {
-          slug = segments[1];
+      if (raw.startsWith('http://') || raw.startsWith('https://')) {
+        const url = new URL(raw);
+        if (url.pathname.startsWith('/room/')) {
+          router.push(url.pathname + url.search);
+          return;
         }
       }
     } catch {
-      // not a valid URL, treat as raw slug
+      // not a valid URL, treat as code
     }
-    router.push(`/room/${encodeURIComponent(slug)}`);
+    const cleaned = raw
+      .replace(/^https?:\/\/[^/]+\/room\//i, '')
+      .replace(/^\/room\//i, '')
+      .replace(/^\//, '')
+      .replace(/\s+/g, '-')
+      .toLowerCase();
+    router.push(`/room/${encodeURIComponent(cleaned)}`);
   }
+
 
   return (
     <div className="gm-home-container">

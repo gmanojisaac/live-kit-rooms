@@ -66,10 +66,10 @@ export function ParticipantPresence({ coordinatorIdentity = '' }) {
       <div className="camera-grid" aria-label="Participant cameras">
         {cameras.map((track) => {
           const isCoordinator = Boolean(coordinatorIdentity)
-            && track.participant.identity === coordinatorIdentity;
+            && track.participant?.identity === coordinatorIdentity;
           return (
             <div
-              key={track.participant.identity}
+              key={track.publication?.trackSid || track.participant?.identity || `${track.source || 'cam'}`}
               className={`camera-tile-wrap${isCoordinator ? ' camera-tile-wrap--coordinator' : ''}`}
               data-coordinator={isCoordinator ? 'true' : undefined}
             >

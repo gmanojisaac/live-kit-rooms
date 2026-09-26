@@ -30,13 +30,21 @@ function runOwnerAutoJoin(slug, task) {
   return promise;
 }
 
-async function requestAdmission({ slug, inviteToken, displayName, accessCode, rejoinToken }) {
+async function requestAdmission({
+  slug,
+  inviteToken,
+  displayName,
+  accessCode,
+  rejoinToken,
+  ownerJoinToken,
+}) {
   const body = {
     inviteToken,
     displayName,
     accessCode,
   };
   if (rejoinToken) body.rejoinToken = rejoinToken;
+  if (ownerJoinToken) body.ownerJoinToken = ownerJoinToken;
 
   const response = await fetch(`/api/rooms/${encodeURIComponent(slug)}/join`, {
     method: 'POST',
@@ -136,11 +144,12 @@ export default function JoinRoomForm({ slug, inviteToken, roomMeta }) {
       livekitUrl: payload.livekitUrl,
       room: payload.room,
       participant: payload.participant,
+      moderatorToken: payload.moderatorToken || null,
     });
     setAccessCode('');
   }
 
-  async function admitWithOptionalRejoin({ displayName: name, accessCode: code }) {
+  async function admitWithOptionalRejoin({ displayName: name, accessCode: code, ownerJoinToken }) {
     const storedRejoin = readRejoinToken(slug);
     let result = await requestAdmission({
       slug,
@@ -148,6 +157,7 @@ export default function JoinRoomForm({ slug, inviteToken, roomMeta }) {
       displayName: name,
       accessCode: code,
       rejoinToken: storedRejoin || undefined,
+      ownerJoinToken,
     });
 
     if (
@@ -162,6 +172,7 @@ export default function JoinRoomForm({ slug, inviteToken, roomMeta }) {
         inviteToken,
         displayName: name,
         accessCode: code,
+        ownerJoinToken,
       });
     }
 
@@ -169,7 +180,6 @@ export default function JoinRoomForm({ slug, inviteToken, roomMeta }) {
   }
 
   useLayoutEffect(() => {
-    if (!inviteToken) return undefined;
     const handoff = readOwnerJoinHandoff(slug);
     if (!handoff) return undefined;
 
@@ -183,6 +193,7 @@ export default function JoinRoomForm({ slug, inviteToken, roomMeta }) {
     runOwnerAutoJoin(slug, () => admitWithOptionalRejoin({
       displayName: handoff.displayName,
       accessCode: handoff.accessCode,
+      ownerJoinToken: handoff.ownerJoinToken,
     })).then((result) => {
       if (cancelled) return;
       setBusy(false);
@@ -247,18 +258,6 @@ export default function JoinRoomForm({ slug, inviteToken, roomMeta }) {
     } else if (info?.kind === 'ended') {
       setEndedMessage('This meeting has ended.');
     }
-  }
-
-  if (!inviteToken) {
-    return (
-      <div className="gm-create-card" style={{ maxWidth: '480px', margin: '2rem auto' }}>
-        <h2>Invitation required</h2>
-        <p className="hint" role="status">
-          Invitation link + access code are required to join. Open an invitation link that includes
-          the invite token — the meeting ID alone cannot authorize entry.
-        </p>
-      </div>
-    );
   }
 
   if (admission) {
@@ -358,25 +357,10 @@ export default function JoinRoomForm({ slug, inviteToken, roomMeta }) {
                 required
                 maxLength={40}
                 autoComplete="nickname"
+                autoFocus
               />
             </label>
 
-            <label>
-              Access code
-              <input
-                name="accessCode"
-                type="password"
-                placeholder="Enter access code"
-                value={accessCode}
-                onChange={(e) => {
-                  setAccessCode(e.target.value);
-                  if (error) setError('');
-                }}
-                required
-                minLength={12}
-                autoComplete="off"
-              />
-            </label>
 
             {error ? (
               <p className="error" role="alert">
