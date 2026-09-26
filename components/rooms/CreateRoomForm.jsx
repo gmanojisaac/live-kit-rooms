@@ -8,6 +8,7 @@ export default function CreateRoomForm() {
   const [title, setTitle] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [accessCode, setAccessCode] = useState('');
+  const [createdAccessCode, setCreatedAccessCode] = useState('');
   const [expiresAt, setExpiresAt] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -57,6 +58,7 @@ export default function CreateRoomForm() {
       }
       setResult(payload);
       setDisplayName(ownerName);
+      setCreatedAccessCode(accessCode);
       setAccessCode('');
     } catch {
       setError('Unable to create room.');
@@ -69,9 +71,30 @@ export default function CreateRoomForm() {
     if (!result?.invitationUrl) return;
     try {
       await navigator.clipboard.writeText(result.invitationUrl);
-      setCopyStatus('Invitation link copied. Send the access code separately.');
+      setCopyStatus('Invitation link copied.');
     } catch {
       setCopyStatus('Clipboard unavailable. Copy the link manually.');
+    }
+  }
+
+  async function copyAccessCode() {
+    if (!createdAccessCode) return;
+    try {
+      await navigator.clipboard.writeText(createdAccessCode);
+      setCopyStatus('Access code copied.');
+    } catch {
+      setCopyStatus('Clipboard unavailable. Copy the code manually.');
+    }
+  }
+
+  async function copyFullInvitation() {
+    if (!result?.invitationUrl || !createdAccessCode) return;
+    const text = `Join my meeting "${result.room?.title || 'Meeting'}":\nLink: ${result.invitationUrl}\nAccess Code: ${createdAccessCode}`;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyStatus('Full invitation (link + access code) copied to clipboard!');
+    } catch {
+      setCopyStatus('Clipboard unavailable. Copy manually.');
     }
   }
 
@@ -86,7 +109,10 @@ export default function CreateRoomForm() {
               name="displayName"
               placeholder="How you'll appear in the meeting"
               value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
+              onChange={(e) => {
+                setDisplayName(e.target.value);
+                if (error) setError('');
+              }}
               required
               maxLength={40}
               autoComplete="nickname"
@@ -100,7 +126,10 @@ export default function CreateRoomForm() {
               name="title"
               placeholder="e.g. Design review & screen collaboration"
               value={title}
-              onChange={(e) => setTitle(e.target.value)}
+              onChange={(e) => {
+                setTitle(e.target.value);
+                if (error) setError('');
+              }}
               required
               maxLength={120}
               autoComplete="off"
@@ -115,7 +144,10 @@ export default function CreateRoomForm() {
               type="password"
               placeholder="Min. 12 characters"
               value={accessCode}
-              onChange={(e) => setAccessCode(e.target.value)}
+              onChange={(e) => {
+                setAccessCode(e.target.value);
+                if (error) setError('');
+              }}
               required
               minLength={12}
               maxLength={128}
@@ -159,16 +191,39 @@ export default function CreateRoomForm() {
 
           <div className="gm-input-field">
             <label>Invitation Link</label>
-            <input
-              readOnly
-              value={result.invitationUrl || ''}
-              onFocus={(e) => e.target.select()}
-            />
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <input
+                readOnly
+                value={result.invitationUrl || ''}
+                onFocus={(e) => e.target.select()}
+                style={{ flex: 1 }}
+              />
+              <button type="button" onClick={copyInvitation} style={{ whiteSpace: 'nowrap' }}>
+                Copy Link
+              </button>
+            </div>
           </div>
 
-          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'center' }}>
-            <button type="button" onClick={copyInvitation}>
-              Copy Invitation Link
+          {createdAccessCode ? (
+            <div className="gm-input-field" style={{ marginTop: '0.75rem' }}>
+              <label>Access Code</label>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <input
+                  readOnly
+                  value={createdAccessCode}
+                  onFocus={(e) => e.target.select()}
+                  style={{ flex: 1, fontFamily: 'monospace', letterSpacing: '0.05em' }}
+                />
+                <button type="button" onClick={copyAccessCode} style={{ whiteSpace: 'nowrap' }}>
+                  Copy Code
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'center', marginTop: '1.25rem' }}>
+            <button type="button" onClick={copyFullInvitation} className="gm-btn-secondary">
+              Copy Full Invite (Link + Code)
             </button>
             {result.invitationUrl && (
               <Link
@@ -181,8 +236,8 @@ export default function CreateRoomForm() {
             )}
           </div>
 
-          {copyStatus && <p role="status" className="hint" style={{ color: 'var(--gm-green)' }}>{copyStatus}</p>}
-          <p className="hint" style={{ marginTop: '0.5rem' }}>
+          {copyStatus && <p role="status" className="hint" style={{ color: 'var(--gm-green)', fontWeight: 500 }}>{copyStatus}</p>}
+          <p className="hint" style={{ marginTop: '0.75rem' }}>
             Join meeting now signs you in as {displayName || 'the coordinator'} with the access code you just entered. Send the invitation link and the access code to other people. They still enter both when they join.
           </p>
         </div>
