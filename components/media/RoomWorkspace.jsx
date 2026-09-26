@@ -905,7 +905,7 @@ export function RoomWorkspace({
                         data-testid="copy-meeting-id"
                         style={{ whiteSpace: 'nowrap', padding: '0.4rem 0.8rem', fontSize: '0.8rem' }}
                       >
-                        {copiedCode ? 'Code copied!' : 'Copy Code'}
+                        {copiedCode ? 'Meeting ID copied!' : 'Copy meeting ID'}
                       </button>
                     </div>
                   </div>
@@ -977,7 +977,10 @@ export function RoomWorkspace({
                   <p className="hint" role="status" data-testid="invite-link-feedback">{copiedInvite}</p>
                 ) : null}
                 <p className="hint gm-info-note" style={{ marginTop: '0.75rem' }}>
-                  The meeting ID is for reference only. Joining requires the invitation link and access code. Access codes are kept separate from links for security.
+                  The meeting ID is for reference only. Joining requires the invitation link and access code.
+                </p>
+                <p className="hint gm-info-note">
+                  Invitation link + access code are required to join. Access codes are kept separate from links for security.
                 </p>
               </div>
 

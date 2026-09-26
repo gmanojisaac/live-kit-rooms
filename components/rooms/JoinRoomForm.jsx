@@ -260,6 +260,18 @@ export default function JoinRoomForm({ slug, inviteToken, roomMeta }) {
     }
   }
 
+  if (!inviteToken && (typeof window === 'undefined' || !readOwnerJoinHandoff(slug))) {
+    return (
+      <div className="gm-create-card" style={{ maxWidth: '480px', margin: '2rem auto' }}>
+        <h2>Invitation required</h2>
+        <p className="hint" role="status">
+          Invitation link + access code are required to join. Open an invitation link that includes
+          the invite token — the meeting ID alone cannot authorize entry.
+        </p>
+      </div>
+    );
+  }
+
   if (admission) {
     return (
       <MediaRoom

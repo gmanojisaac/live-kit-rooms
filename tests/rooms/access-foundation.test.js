@@ -179,7 +179,7 @@ test('room creation persists public fields and invitation URL without access cod
   assert.ok(invite);
   assert.equal(invite.used_count, 0);
   assert.equal(invite.revoked_at, null);
-  assert.equal(invite.max_uses, null);
+  assert.equal(invite.max_uses, PROVISIONAL_INVITE_DEFAULT_MAX_USES);
   assert.equal(invite.token_hash.includes(_test.rawToken), false);
 
   const expectedExpiry = now() + PROVISIONAL_DEFAULT_EXPIRY_MINUTES * 60 * 1000;
