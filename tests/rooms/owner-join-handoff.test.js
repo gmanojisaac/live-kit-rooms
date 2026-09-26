@@ -38,6 +38,22 @@ test('owner handoff stores the name and access code for the created room', () =>
   );
 });
 
+test('owner handoff preserves creator join token when provided', () => {
+  const storage = memoryStorage();
+  assert.equal(saveOwnerJoinHandoff({
+    ...handoff,
+    ownerJoinToken: 'signed.creator.join.token',
+  }, storage, () => 1_000), true);
+  assert.deepEqual(
+    readOwnerJoinHandoff('abc123', storage, () => 1_000),
+    {
+      displayName: 'Akshay',
+      accessCode: 'owner-access-code',
+      ownerJoinToken: 'signed.creator.join.token',
+    },
+  );
+});
+
 test('owner handoff is ignored for a different room', () => {
   const storage = memoryStorage();
   saveOwnerJoinHandoff(handoff, storage, () => 1_000);

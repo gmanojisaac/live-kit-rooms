@@ -166,7 +166,7 @@ test('room creation persists public fields and invitation URL without access cod
   assert.ok(publicResult.invitationUrl.includes(_test.rawToken));
   assert.equal(JSON.stringify(publicResult).includes(_test.codeHash), false);
   assert.equal(JSON.stringify(publicResult).includes(_test.tokenHash), false);
-  assert.equal(JSON.stringify(publicResult).includes(ACCESS_CODE), false);
+  assert.equal(publicResult.accessCode, ACCESS_CODE);
 
   const stored = await repository.getRoomBySlug(publicResult.room.slug);
   assert.ok(stored);
@@ -248,7 +248,7 @@ test('expired room is not joinable; invite cannot outlive room', async (t) => {
   assert.equal(inviteCheck.ok, false);
 });
 
-test('revoked and exhausted invites are rejected without consuming on code failure', async (t) => {
+test('revoked invites are rejected; prior invite use count does not close capacity', async (t) => {
   const { result, repository } = await createTestRoom(t);
   const invite = await repository.getInviteByTokenHash(result._test.tokenHash);
   invite.revoked_at = new Date().toISOString();
@@ -265,16 +265,14 @@ test('revoked and exhausted invites are rejected without consuming on code failu
   invite.revoked_at = null;
   invite.max_uses = 1;
   invite.used_count = 1;
-  const exhausted = await validateRoomAccess({
+  const previouslyUsed = await validateRoomAccess({
     repository,
     slug: result.room.slug,
     rawInviteToken: result._test.rawToken,
     accessCode: ACCESS_CODE,
   });
-  assert.equal(exhausted.ok, false);
-  assert.equal(exhausted.reason, AccessRejection.INVITE_EXHAUSTED);
+  assert.equal(previouslyUsed.ok, true);
 
-  invite.used_count = 0;
   const badCode = await validateRoomAccess({
     repository,
     slug: result.room.slug,
@@ -283,7 +281,7 @@ test('revoked and exhausted invites are rejected without consuming on code failu
   });
   assert.equal(badCode.ok, false);
   assert.equal(badCode.reason, AccessRejection.ACCESS_CODE_INVALID);
-  assert.equal(invite.used_count, 0);
+  assert.equal(invite.used_count, 1);
 });
 
 test('valid access foundation accepts invite + code for an active room', async (t) => {

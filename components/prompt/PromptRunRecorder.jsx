@@ -74,8 +74,11 @@ export function PromptRunRecorder({
 
   useEffect(() => () => {
     if (jpegPreviewUrl) URL.revokeObjectURL(jpegPreviewUrl);
-    if (runImageUrlRef.current) URL.revokeObjectURL(runImageUrlRef.current);
   }, [jpegPreviewUrl]);
+
+  useEffect(() => () => {
+    if (runImageUrlRef.current) URL.revokeObjectURL(runImageUrlRef.current);
+  }, []);
 
   function openRecordForm() {
     const defaultVersion = versions[0]?.version || '';

@@ -33,6 +33,11 @@ import {
   __resetJoinLimiterForTests,
 } from '../../lib/rooms/join-handler.js';
 import { generateInviteToken } from '../../lib/security/invite-token.js';
+import { createOwnerSession } from '../../lib/security/owner-session.js';
+import {
+  createCreatorJoinToken,
+  verifyModeratorActionToken,
+} from '../../lib/security/room-role-token.js';
 
 const ACCESS_CODE = 'test-access-code-ok';
 const SESSION_SECRET = 'test-owner-session-secret-32chars!!';
@@ -136,6 +141,9 @@ test('valid invitation + access code issues short-lived room-scoped JWT', async 
   assert.equal(admitted.room.title, 'Join Test Room');
   assert.equal(admitted.room.maxParticipants, 6);
   assert.equal(admitted.participant.displayName, 'Arjun');
+  assert.equal(admitted.participant.role, 'participant');
+  assert.equal(admitted.participant.isAdmin, false);
+  assert.equal(admitted.moderatorToken, null);
   assert.match(admitted.participant.identity, /^[0-9a-f-]{36}$/i);
   assert.notEqual(admitted.participant.identity, 'Arjun');
   assert.ok(admitted.participant.rejoinToken);
@@ -151,6 +159,7 @@ test('valid invitation + access code issues short-lived room-scoped JWT', async 
   assert.equal(claims.video.canSubscribe, true);
   assert.equal(claims.video.canPublishData, true);
   assert.equal(claims.video.roomAdmin, undefined);
+  assert.deepEqual(JSON.parse(claims.metadata), { role: 'participant' });
   assert.ok(claims.exp > Math.floor(Date.now() / 1000));
   const roomExp = Math.floor(Date.parse(seed.result.room.expiresAt) / 1000);
   assert.ok(claims.exp <= roomExp);
@@ -167,6 +176,142 @@ test('valid invitation + access code issues short-lived room-scoped JWT', async 
   assert.equal('code_hash' in admitted.room, false);
 });
 
+test('room creator joins as app admin; link/code guests remain participants', async (t) => {
+  const seed = await seedRoom(t);
+  const ownerSession = createOwnerSession(SESSION_SECRET, {
+    ownerId: seed.result.owner.id,
+    now: seed.now,
+  });
+  const ownerJoinToken = createCreatorJoinToken({
+    secret: SESSION_SECRET,
+    ownerId: seed.result.owner.id,
+    roomId: seed.result.room.id,
+    slug: seed.result.room.slug,
+    now: seed.now,
+  });
+
+  const owner = await joinRoomAsParticipant(joinArgs(seed, {
+    displayName: 'Creator',
+    ownerSessionToken: ownerSession.token,
+    ownerJoinToken,
+  }));
+  assert.equal(owner.participant.role, 'admin');
+  assert.equal(owner.participant.isAdmin, true);
+  assert.ok(owner.moderatorToken);
+  assert.ok(verifyModeratorActionToken(owner.moderatorToken, {
+    secret: SESSION_SECRET,
+    ownerId: seed.result.owner.id,
+    roomId: seed.result.room.id,
+    slug: seed.result.room.slug,
+    now: seed.now,
+  }));
+  const ownerClaims = await verifyParticipantAccessToken(owner.token, LIVEKIT);
+  assert.equal(ownerClaims.video.roomAdmin, undefined);
+  assert.deepEqual(JSON.parse(ownerClaims.metadata), { role: 'admin' });
+
+  const sameBrowserGuest = await joinRoomAsParticipant(joinArgs(seed, {
+    displayName: 'Same Browser Guest',
+    ownerSessionToken: ownerSession.token,
+  }));
+  assert.equal(sameBrowserGuest.participant.role, 'participant');
+  assert.equal(sameBrowserGuest.participant.isAdmin, false);
+  assert.equal(sameBrowserGuest.moderatorToken, null);
+
+  const wrongOwnerSession = createOwnerSession(SESSION_SECRET, {
+    ownerId: crypto.randomUUID(),
+    now: seed.now,
+  });
+  const guest = await joinRoomAsParticipant(joinArgs(seed, {
+    displayName: 'Guest',
+    ownerSessionToken: wrongOwnerSession.token,
+  }));
+  assert.equal(guest.participant.role, 'participant');
+  assert.equal(guest.participant.isAdmin, false);
+  assert.equal(guest.moderatorToken, null);
+  const guestClaims = await verifyParticipantAccessToken(guest.token, LIVEKIT);
+  assert.deepEqual(JSON.parse(guestClaims.metadata), { role: 'participant' });
+});
+
+test('HTTP join marks only the signed room creator as admin', async (t) => {
+  __resetJoinLimiterForTests();
+  const seed = await seedRoom(t);
+  const ownerSession = createOwnerSession(SESSION_SECRET, {
+    ownerId: seed.result.owner.id,
+    now: seed.now,
+  });
+  const ownerJoinToken = createCreatorJoinToken({
+    secret: SESSION_SECRET,
+    ownerId: seed.result.owner.id,
+    roomId: seed.result.room.id,
+    slug: seed.result.room.slug,
+    now: seed.now,
+  });
+  const config = {
+    livekitUrl: LIVEKIT.url,
+    livekitApiKey: LIVEKIT.apiKey,
+    livekitApiSecret: LIVEKIT.apiSecret,
+    roomPolicy: testPolicy(),
+  };
+
+  const response = await handleJoinPost(
+    new Request(`https://example.test/api/rooms/${seed.result.room.slug}/join`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        cookie: `lkr_owner_session=${encodeURIComponent(ownerSession.token)}`,
+      },
+      body: JSON.stringify({
+        inviteToken: seed.result._test.rawToken,
+        displayName: 'Creator',
+        accessCode: ACCESS_CODE,
+        ownerJoinToken,
+      }),
+    }),
+    { params: { slug: seed.result.room.slug } },
+    {
+      config,
+      repository: seed.repository,
+      livekitRooms: createMockLiveKit(),
+      livekitCredentials: LIVEKIT,
+      limiter: createJoinRateLimiter({ maxFailures: 5, windowMs: 900000 }),
+      resolveClientIp: () => '127.0.0.1',
+      now: seed.now,
+    },
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(response.body.participant.role, 'admin');
+  assert.equal(response.body.participant.isAdmin, true);
+  assert.ok(response.body.moderatorToken);
+
+  const guestResponse = await handleJoinPost(
+    new Request(`https://example.test/api/rooms/${seed.result.room.slug}/join`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        inviteToken: seed.result._test.rawToken,
+        displayName: 'Guest',
+        accessCode: ACCESS_CODE,
+      }),
+    }),
+    { params: { slug: seed.result.room.slug } },
+    {
+      config,
+      repository: seed.repository,
+      livekitRooms: createMockLiveKit(),
+      livekitCredentials: LIVEKIT,
+      limiter: createJoinRateLimiter({ maxFailures: 5, windowMs: 900000 }),
+      resolveClientIp: () => '127.0.0.2',
+      now: seed.now,
+    },
+  );
+
+  assert.equal(guestResponse.status, 200);
+  assert.equal(guestResponse.body.participant.role, 'participant');
+  assert.equal(guestResponse.body.participant.isAdmin, false);
+  assert.equal(guestResponse.body.moderatorToken, null);
+});
+
 test('unknown room slug is rejected', async (t) => {
   const seed = await seedRoom(t);
   await assert.rejects(
@@ -175,7 +320,7 @@ test('unknown room slug is rejected', async (t) => {
   );
 });
 
-test('invalid / revoked / expired / exhausted invitations are rejected without consuming', async (t) => {
+test('invalid / revoked / expired invitations are rejected without consuming', async (t) => {
   const seed = await seedRoom(t);
   const invite = await seed.repository.getInviteByTokenHash(seed.result._test.tokenHash);
 
@@ -198,11 +343,6 @@ test('invalid / revoked / expired / exhausted invitations are rejected without c
   );
   invite.expires_at = seed.result.room.expires_at;
 
-  invite.used_count = invite.max_uses;
-  await assert.rejects(
-    () => joinRoomAsParticipant(joinArgs(seed)),
-    (error) => error instanceof RoomJoinError && error.httpStatus === 409,
-  );
   invite.used_count = 0;
 
   const after = await seed.repository.getInviteByTokenHash(seed.result._test.tokenHash);
@@ -316,6 +456,25 @@ test('six admissions allowed; seventh rejected; LiveKit maxParticipants is six',
 
   const invite = await repository.getInviteByTokenHash(created._test.tokenHash);
   assert.equal(invite.used_count, 6);
+});
+
+test('legacy invite use count does not block a sixth active participant slot', async (t) => {
+  const seed = await seedRoom(t);
+  const invite = await seed.repository.getInviteByTokenHash(seed.result._test.tokenHash);
+  invite.max_uses = 6;
+  invite.used_count = 6;
+
+  const livekitRooms = createMockLiveKit({ participantCount: 5 });
+  const admitted = await joinRoomAsParticipant(joinArgs(seed, {
+    livekitRooms,
+    displayName: 'Sixth Active User',
+  }));
+
+  assert.ok(admitted.token);
+  assert.equal(admitted.participant.displayName, 'Sixth Active User');
+
+  const after = await seed.repository.getInviteByTokenHash(seed.result._test.tokenHash);
+  assert.equal(after.used_count, 7);
 });
 
 test('concurrent capacity backstop uses LiveKit maxParticipants configuration', async (t) => {
@@ -601,4 +760,120 @@ test('HTTP join response omits sensitive fields and rejects client identity over
   assert.equal(JSON.stringify(payload).includes(LIVEKIT.apiSecret), false);
   assert.equal(JSON.stringify(payload).includes(ACCESS_CODE), false);
   assert.equal(JSON.stringify(payload).includes(seed.result._test.codeHash), false);
+});
+
+test('participant can join with slug + access code only (no invite token required)', async (t) => {
+  const seed = await seedRoom(t);
+  const livekitRooms = createMockLiveKit();
+  const admitted = await joinRoomAsParticipant({
+    slug: seed.result.room.slug,
+    // inviteToken is omitted
+    displayName: 'CodeOnlyUser',
+    accessCode: ACCESS_CODE,
+    repository: seed.repository,
+    livekitRooms,
+    livekitCredentials: LIVEKIT,
+    policy: testPolicy(),
+    now: seed.now,
+  });
+
+  assert.ok(admitted.token);
+  assert.equal(admitted.participant.displayName, 'CodeOnlyUser');
+  assert.equal(admitted.room.slug, seed.result.room.slug);
+  const claims = await verifyParticipantAccessToken(admitted.token, LIVEKIT);
+  assert.equal(claims.video.room, seed.result.room.slug);
+});
+
+test('room creation auto-generates Google Meet style access code when omitted', async (t) => {
+  const repository = createMemoryRoomRepository();
+  const created = await createRoom({
+    title: 'Auto Code Room',
+    // accessCode is omitted
+    baseUrl: 'https://example.test',
+    repository,
+    policy: testPolicy(),
+    now: () => Date.now(),
+  });
+  t.after(async () => repository.deleteRoomCascade(created.room.id));
+
+  assert.ok(created.accessCode);
+  assert.match(created.accessCode, /^[a-z]{3}-[a-z]{4}-[a-z]{4}$/);
+  assert.ok(created.accessCode.length >= 12);
+
+  // Can join using the auto-generated code
+  const livekitRooms = createMockLiveKit();
+  const admitted = await joinRoomAsParticipant({
+    slug: created.room.slug,
+    displayName: 'AutoCodeJoiner',
+    accessCode: created.accessCode,
+    repository,
+    livekitRooms,
+    livekitCredentials: LIVEKIT,
+    policy: testPolicy(),
+  });
+  assert.ok(admitted.token);
+  assert.equal(admitted.participant.displayName, 'AutoCodeJoiner');
+});
+
+test('room creation allows omitted/empty title and defaults to Instant Meeting', async (t) => {
+  const repository = createMemoryRoomRepository();
+  const created = await createRoom({
+    // title is omitted
+    baseUrl: 'https://example.test',
+    repository,
+    policy: testPolicy(),
+    now: () => Date.now(),
+  });
+  t.after(async () => repository.deleteRoomCascade(created.room.id));
+
+  assert.equal(created.room.title, 'Instant Meeting');
+  assert.match(created.room.slug, /^[a-z]{3}-[a-z]{4}-[a-z]{4}$/);
+  assert.equal(created.accessCode, created.room.slug);
+});
+
+test('guest joining with invite link does not need access code', async (t) => {
+  const seed = await seedRoom(t);
+  const livekitRooms = createMockLiveKit();
+  const admitted = await joinRoomAsParticipant({
+    slug: seed.result.room.slug,
+    inviteToken: seed.result._test.rawToken,
+    displayName: 'InviteLinkGuest',
+    // accessCode is omitted
+    repository: seed.repository,
+    livekitRooms,
+    livekitCredentials: LIVEKIT,
+    policy: testPolicy(),
+    now: seed.now,
+  });
+
+  assert.ok(admitted.token);
+  assert.equal(admitted.participant.displayName, 'InviteLinkGuest');
+  assert.equal(admitted.room.slug, seed.result.room.slug);
+});
+
+test('guest joining by meeting code from home page does not need access code', async (t) => {
+  const repository = createMemoryRoomRepository();
+  const created = await createRoom({
+    title: 'Standup',
+    baseUrl: 'https://example.test',
+    repository,
+    policy: testPolicy(),
+    now: () => Date.now(),
+  });
+  t.after(async () => repository.deleteRoomCascade(created.room.id));
+
+  const livekitRooms = createMockLiveKit();
+  const admitted = await joinRoomAsParticipant({
+    slug: created.room.slug,
+    // inviteToken and accessCode omitted
+    displayName: 'CodeJoinGuest',
+    repository,
+    livekitRooms,
+    livekitCredentials: LIVEKIT,
+    policy: testPolicy(),
+  });
+
+  assert.ok(admitted.token);
+  assert.equal(admitted.participant.displayName, 'CodeJoinGuest');
+  assert.equal(admitted.room.slug, created.room.slug);
 });

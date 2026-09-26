@@ -7,7 +7,7 @@ import { saveOwnerJoinHandoff } from '@/lib/rooms/owner-join-handoff.js';
 export default function CreateRoomForm() {
   const [title, setTitle] = useState('');
   const [displayName, setDisplayName] = useState('');
-  const [accessCode, setAccessCode] = useState('');
+  const [createdAccessCode, setCreatedAccessCode] = useState('');
   const [expiresAt, setExpiresAt] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -29,10 +29,10 @@ export default function CreateRoomForm() {
     }
 
     try {
-      const body = {
-        title,
-        accessCode,
-      };
+      const body = {};
+      if (title.trim()) {
+        body.title = title.trim();
+      }
       if (expiresAt) {
         body.expiresAt = new Date(expiresAt).toISOString();
       }
@@ -48,16 +48,18 @@ export default function CreateRoomForm() {
         return;
       }
 
+      const finalCode = payload.accessCode || payload.room?.slug;
       if (payload.room?.slug) {
         saveOwnerJoinHandoff({
           slug: payload.room.slug,
           displayName: ownerName,
-          accessCode,
+          accessCode: finalCode,
+          ownerJoinToken: payload.ownerJoinToken,
         });
       }
       setResult(payload);
       setDisplayName(ownerName);
-      setAccessCode('');
+      setCreatedAccessCode(finalCode);
     } catch {
       setError('Unable to create room.');
     } finally {
@@ -69,9 +71,38 @@ export default function CreateRoomForm() {
     if (!result?.invitationUrl) return;
     try {
       await navigator.clipboard.writeText(result.invitationUrl);
-      setCopyStatus('Invitation link copied. Send the access code separately.');
+      setCopyStatus('Invitation link copied.');
     } catch {
       setCopyStatus('Clipboard unavailable. Copy the link manually.');
+    }
+  }
+
+  async function copyAccessCode() {
+    const code = createdAccessCode || result?.room?.slug;
+    if (!code) return;
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopyStatus('Meeting code copied.');
+    } catch {
+      setCopyStatus('Clipboard unavailable. Copy the code manually.');
+    }
+  }
+
+  async function copyFullInvitation() {
+    if (!result?.invitationUrl) return;
+    const code = createdAccessCode || result?.room?.slug;
+    const lines = [
+      `Meeting: ${result.room?.title || 'Instant Meeting'}`,
+      `Invitation Link: ${result.invitationUrl}`,
+    ];
+    if (code) {
+      lines.push(`Meeting Code: ${code}`);
+    }
+    try {
+      await navigator.clipboard.writeText(lines.join('\n'));
+      setCopyStatus('Full invite (link + meeting code) copied.');
+    } catch {
+      setCopyStatus('Clipboard unavailable. Copy manually.');
     }
   }
 
@@ -86,7 +117,10 @@ export default function CreateRoomForm() {
               name="displayName"
               placeholder="How you'll appear in the meeting"
               value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
+              onChange={(e) => {
+                setDisplayName(e.target.value);
+                if (error) setError('');
+              }}
               required
               maxLength={40}
               autoComplete="nickname"
@@ -94,32 +128,18 @@ export default function CreateRoomForm() {
           </div>
 
           <div className="gm-input-field">
-            <label htmlFor="create-title">Meeting Title</label>
+            <label htmlFor="create-title">Meeting Title (optional)</label>
             <input
               id="create-title"
               name="title"
               placeholder="e.g. Design review & screen collaboration"
               value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              required
+              onChange={(e) => {
+                setTitle(e.target.value);
+                if (error) setError('');
+              }}
               maxLength={120}
               autoComplete="off"
-            />
-          </div>
-
-          <div className="gm-input-field">
-            <label htmlFor="create-access-code">Access Code</label>
-            <input
-              id="create-access-code"
-              name="accessCode"
-              type="password"
-              placeholder="Min. 12 characters"
-              value={accessCode}
-              onChange={(e) => setAccessCode(e.target.value)}
-              required
-              minLength={12}
-              maxLength={128}
-              autoComplete="new-password"
             />
           </div>
 
@@ -148,9 +168,9 @@ export default function CreateRoomForm() {
 
       {result && (
         <div className="create-room-result panel">
-          <h2>Here's your meeting link</h2>
+          <h2>Here's your meeting link & code</h2>
           <p>
-            <strong>{result.room?.title}</strong>
+            <strong>{result.room?.title || 'Instant Meeting'}</strong>
             {' '}(<code>{result.room?.slug}</code>)
           </p>
           <p className="hint">
@@ -159,17 +179,35 @@ export default function CreateRoomForm() {
 
           <div className="gm-input-field">
             <label>Invitation Link</label>
-            <input
-              readOnly
-              value={result.invitationUrl || ''}
-              onFocus={(e) => e.target.select()}
-            />
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <input
+                readOnly
+                value={result.invitationUrl || ''}
+                onFocus={(e) => e.target.select()}
+                style={{ flex: 1 }}
+              />
+              <button type="button" onClick={copyInvitation} style={{ whiteSpace: 'nowrap' }}>
+                Copy Link
+              </button>
+            </div>
           </div>
 
-          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'center' }}>
-            <button type="button" onClick={copyInvitation}>
-              Copy Invitation Link
-            </button>
+          <div className="gm-input-field" style={{ marginTop: '0.75rem' }}>
+            <label>Meeting Code</label>
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <input
+                readOnly
+                value={createdAccessCode || result.room?.slug || ''}
+                onFocus={(e) => e.target.select()}
+                style={{ flex: 1, fontFamily: 'monospace', letterSpacing: '0.05em', fontWeight: 600, color: 'var(--gm-blue)' }}
+              />
+              <button type="button" onClick={copyAccessCode} style={{ whiteSpace: 'nowrap' }}>
+                Copy Code
+              </button>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', alignItems: 'center', marginTop: '1.25rem' }}>
             {result.invitationUrl && (
               <Link
                 href={result.invitationUrl}
@@ -179,10 +217,26 @@ export default function CreateRoomForm() {
                 Join meeting now
               </Link>
             )}
+            <button
+              type="button"
+              onClick={copyFullInvitation}
+              style={{
+                padding: '0.55rem 1rem',
+                fontSize: '0.9rem',
+                background: 'var(--gm-surface-elevated)',
+                border: '1px solid var(--gm-border-subtle)',
+                borderRadius: '8px',
+                color: 'var(--gm-text-main)',
+                cursor: 'pointer',
+                fontWeight: 500,
+              }}
+            >
+              📋 Copy Full Invite (Link + Code)
+            </button>
           </div>
 
-          {copyStatus && <p role="status" className="hint" style={{ color: 'var(--gm-green)' }}>{copyStatus}</p>}
-          <p className="hint" style={{ marginTop: '0.5rem' }}>
+          {copyStatus && <p role="status" className="hint" style={{ color: 'var(--gm-green)', fontWeight: 500, marginTop: '0.75rem' }}>{copyStatus}</p>}
+          <p className="hint" style={{ marginTop: '0.75rem' }}>
             Join meeting now signs you in as {displayName || 'the coordinator'} with the access code you just entered. Send the invitation link and the access code to other people. They still enter both when they join.
           </p>
         </div>

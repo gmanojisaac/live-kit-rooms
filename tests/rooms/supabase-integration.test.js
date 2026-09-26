@@ -123,7 +123,7 @@ test('supabase-backed room creation + lookup + invite hash persistence', async (
   assert.equal(invite.token_hash, _test.tokenHash);
   assert.equal(invite.token_hash.includes(_test.rawToken), false);
   assert.equal(invite.used_count, 0);
-  assert.equal(invite.max_uses, PROVISIONAL_INVITE_DEFAULT_MAX_USES);
+  assert.equal(invite.max_uses, null);
 
   const access = await validateRoomAccess({
     repository,
