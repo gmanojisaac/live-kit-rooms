@@ -63,7 +63,11 @@ export function ParticipantPresence({ coordinatorIdentity = '' }) {
         ))}
       </ul>
 
-      <div className="camera-grid" aria-label="Participant cameras">
+      <div
+        className="camera-grid"
+        data-count={cameras.length}
+        aria-label="Participant cameras"
+      >
         {cameras.map((track) => {
           const isCoordinator = Boolean(coordinatorIdentity)
             && track.participant.identity === coordinatorIdentity;
