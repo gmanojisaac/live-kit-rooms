@@ -1600,6 +1600,61 @@ main.room-page:has(.media-workspace) .join-section {
   background: var(--gm-surface-elevated);
 }
 
+.run-member-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.65rem;
+}
+
+.run-member-filter button {
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.3rem 0.75rem;
+  border-radius: 14px;
+  border: 1px solid var(--gm-border);
+  background: var(--gm-surface-elevated);
+  color: var(--gm-text);
+  cursor: pointer;
+}
+
+.run-member-filter button.active {
+  border-color: var(--gm-blue);
+  background: var(--gm-blue-subtle);
+}
+
+.run-member-prompts {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-bottom: 0.4rem;
+}
+
+.run-member-prompts h4 {
+  margin: 0.35rem 0 0;
+}
+
+.run-prompt-entry {
+  font-size: 0.8rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 10px;
+  border: 1px solid var(--gm-border);
+  background: var(--gm-surface-elevated);
+  color: var(--gm-text);
+}
+
+.run-prompt-entry summary {
+  cursor: pointer;
+}
+
+.run-prompt-entry pre {
+  margin: 0.5rem 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  color: var(--gm-text-muted);
+}
+
 .run-card.selected {
   border-color: var(--gm-blue);
   background: var(--gm-blue-subtle);

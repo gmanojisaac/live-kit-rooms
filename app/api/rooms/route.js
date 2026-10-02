@@ -93,6 +93,7 @@ export async function POST(request) {
       title,
       accessCode,
       expiresAt,
+      permanent: body?.permanent === true,
       baseUrl: getRequestBaseUrl(request, config.appBaseUrl),
       existingSessionToken: getOwnerSessionToken(request),
       creationSecretProvided,

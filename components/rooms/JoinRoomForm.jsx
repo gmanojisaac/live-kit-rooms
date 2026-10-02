@@ -55,7 +55,7 @@ async function requestAdmission({ slug, inviteToken, displayName, accessCode, re
  * Live Meet Pre-Join Lobby ("Green Room") + Media Room Handoff.
  * Allows camera/mic preview test before admission into LiveKit session.
  */
-export default function JoinRoomForm({ slug, inviteToken, roomMeta }) {
+export default function JoinRoomForm({ slug, inviteToken, roomMeta, teamMembers = [] }) {
   const [displayName, setDisplayName] = useState('');
   const [accessCode, setAccessCode] = useState('');
   const [busy, setBusy] = useState(false);
@@ -345,18 +345,35 @@ export default function JoinRoomForm({ slug, inviteToken, roomMeta }) {
           </div>
 
           <form onSubmit={onSubmit} className="join-room-form">
-            <label>
-              Display name
-              <input
-                name="displayName"
-                placeholder="What's your name?"
-                value={displayName}
-                onChange={(e) => setDisplayName(e.target.value)}
-                required
-                maxLength={40}
-                autoComplete="nickname"
-              />
-            </label>
+            {teamMembers.length ? (
+              <label>
+                Your name
+                <select
+                  name="displayName"
+                  value={displayName}
+                  onChange={(e) => setDisplayName(e.target.value)}
+                  required
+                >
+                  <option value="" disabled>Select your name</option>
+                  {teamMembers.map((member) => (
+                    <option key={member} value={member}>{member}</option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <label>
+                Display name
+                <input
+                  name="displayName"
+                  placeholder="What's your name?"
+                  value={displayName}
+                  onChange={(e) => setDisplayName(e.target.value)}
+                  required
+                  maxLength={40}
+                  autoComplete="nickname"
+                />
+              </label>
+            )}
 
             <label>
               Access code

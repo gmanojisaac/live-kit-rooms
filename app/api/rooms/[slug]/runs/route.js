@@ -1,9 +1,7 @@
 import { NextResponse } from 'next/server';
-import { getRunStore } from '../../../../../lib/runs/singleton.js';
+import { createRun, listRuns, RunError } from '../../../../../lib/runs/service.js';
 import { decodeJpegBase64 } from '../../../../../lib/jpeg.js';
-import { createRoomRepository } from '../../../../../lib/rooms/repository.js';
-import { getRoomBySlug } from '../../../../../lib/rooms/lookup.js';
-import { getPromptVersion, PromptError } from '../../../../../lib/prompts/service.js';
+import { getRoomPolicy } from '../../../../../lib/rooms/policy.js';
 import { redactForLog } from '../../../../../lib/security/redact.js';
 
 export const dynamic = 'force-dynamic';
@@ -15,27 +13,23 @@ function jsonError(message, status, extra = {}) {
   });
 }
 
-async function assertRoomExists(slug) {
-  const result = await getRoomBySlug(slug, { repository: createRoomRepository() });
-  if (!result.ok) {
-    throw new PromptError('Room not found.', { httpStatus: 404, code: 'ROOM_NOT_FOUND' });
-  }
-  return result.room;
-}
-
 /**
- * GET /api/rooms/[slug]/runs
+ * GET /api/rooms/[slug]/runs?by=<name>
+ * Work-log entries (newest first) plus the configured team roster for the user filter.
  */
-export async function GET(_request, { params }) {
+export async function GET(request, { params }) {
   const slug = params?.slug;
   if (!slug) return jsonError('Room not found.', 404);
 
   try {
-    await assertRoomExists(slug);
-    const runs = await getRunStore().exclusive(() => getRunStore().list(slug));
-    return NextResponse.json({ runs }, { headers: { 'Cache-Control': 'no-store' } });
+    const executedBy = new URL(request.url).searchParams.get('by');
+    const runs = await listRuns({ slug, executedBy });
+    return NextResponse.json(
+      { runs, teamMembers: getRoomPolicy().teamMembers },
+      { headers: { 'Cache-Control': 'no-store' } },
+    );
   } catch (error) {
-    if (error instanceof PromptError) {
+    if (error instanceof RunError) {
       return jsonError(error.message, error.httpStatus, { code: error.code });
     }
     console.error('runs_list_failed', redactForLog({ message: error?.message, slug }));
@@ -45,7 +39,7 @@ export async function GET(_request, { params }) {
 
 /**
  * POST /api/rooms/[slug]/runs
- * Body: { promptVersion, status, notes?, jpegBase64|jpeg, contentType?, executedBy? }
+ * Body: { kind?: 'run'|'progress', promptVersion?, status?, notes?, jpegBase64|jpeg, contentType?, executedBy? }
  */
 export async function POST(request, { params }) {
   const slug = params?.slug;
@@ -56,16 +50,6 @@ export async function POST(request, { params }) {
     body = await request.json();
   } catch {
     return jsonError('Request body must be JSON.', 400, { code: 'INVALID_JSON' });
-  }
-
-  const promptVersion = Number(body?.promptVersion ?? body?.version);
-  if (!Number.isInteger(promptVersion) || promptVersion < 1) {
-    return jsonError('Select a finalized prompt version.', 422, { code: 'INVALID_VERSION' });
-  }
-
-  const status = body?.status === 'failure' ? 'failure' : body?.status === 'success' ? 'success' : null;
-  if (!status) {
-    return jsonError('Status must be success or failure.', 422, { code: 'INVALID_STATUS' });
   }
 
   let jpeg;
@@ -80,37 +64,24 @@ export async function POST(request, { params }) {
   }
 
   try {
-    await assertRoomExists(slug);
-    const versionEntry = await getPromptVersion({
+    const run = await createRun({
       slug,
-      version: promptVersion,
-      repository: createRoomRepository(),
-    });
-
-    const executedBy = typeof body?.executedBy === 'string'
-      ? body.executedBy.trim().slice(0, 80)
-      : 'Participant';
-    const notes = typeof body?.notes === 'string' ? body.notes : '';
-
-    const run = await getRunStore().exclusive(() => getRunStore().create(slug, {
-      promptVersion,
-      promptSnapshot: versionEntry.prompt || '',
-      executedBy: executedBy || 'Participant',
-      status,
-      notes,
+      kind: body?.kind === 'progress' ? 'progress' : 'run',
+      promptVersion: body?.promptVersion ?? body?.version,
+      status: body?.status,
+      notes: body?.notes ?? '',
+      executedBy: body?.executedBy,
       jpeg,
-    }));
+      teamMembers: getRoomPolicy().teamMembers,
+    });
 
     return NextResponse.json(run, {
       status: 201,
       headers: { 'Cache-Control': 'no-store' },
     });
   } catch (error) {
-    if (error instanceof PromptError) {
+    if (error instanceof RunError) {
       return jsonError(error.message, error.httpStatus, { code: error.code });
-    }
-    if (['INVALID_STATUS', 'INVALID_NOTES', 'NOTES_TOO_LONG', 'MISSING_JPEG'].includes(error?.code)) {
-      return jsonError(error.message, 422, { code: error.code });
     }
     console.error('runs_create_failed', redactForLog({ message: error?.message, slug }));
     return jsonError('Could not save run.', 500);

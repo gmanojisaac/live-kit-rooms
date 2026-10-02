@@ -1,10 +1,11 @@
 'use client';
 
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 const MAX_JPEG_BYTES = 5 * 1024 * 1024;
 const MAX_NOTES = 2000;
+const ALL_MEMBERS = '';
 
 function formatBytes(size) {
   if (size < 1024) return `${size} B`;
@@ -21,8 +22,13 @@ function fileToJpegDataUrl(file) {
   });
 }
 
+function sameName(left, right) {
+  return String(left || '').toLowerCase() === String(right || '').toLowerCase();
+}
+
 /**
- * Manual run recorder + JPEG result capture (from the legacy prompt workspace).
+ * Work log: manual prompt-run results and work-progress uploads, each with a JPEG,
+ * plus a per-person history view (pick a team member at the top).
  * Execution stays manual — upload a JPEG of the result after running the prompt yourself.
  */
 export function PromptRunRecorder({
@@ -31,7 +37,10 @@ export function PromptRunRecorder({
   versions = [],
 }) {
   const [runs, setRuns] = useState([]);
+  const [teamMembers, setTeamMembers] = useState([]);
+  const [memberFilter, setMemberFilter] = useState(ALL_MEMBERS);
   const [recording, setRecording] = useState(false);
+  const [runKind, setRunKind] = useState('run');
   const [runPromptVersion, setRunPromptVersion] = useState('');
   const [runStatus, setRunStatus] = useState('success');
   const [runNotes, setRunNotes] = useState('');
@@ -62,6 +71,7 @@ export function PromptRunRecorder({
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || 'Could not load run history.');
       setRuns(Array.isArray(data.runs) ? data.runs : []);
+      setTeamMembers(Array.isArray(data.teamMembers) ? data.teamMembers : []);
       if (!quiet) setError('');
     } catch (err) {
       if (!quiet) setError(err.message || 'Could not load run history.');
@@ -77,8 +87,29 @@ export function PromptRunRecorder({
     if (runImageUrlRef.current) URL.revokeObjectURL(runImageUrlRef.current);
   }, [jpegPreviewUrl]);
 
+  // People to choose from: the configured roster, else everyone who has saved something.
+  const filterMembers = useMemo(() => {
+    if (teamMembers.length) return teamMembers;
+    const names = [];
+    for (const name of [
+      ...runs.map((run) => run.executedBy),
+      ...versions.map((entry) => entry.finalizedBy),
+    ]) {
+      if (name && !names.some((existing) => sameName(existing, name))) names.push(name);
+    }
+    return names;
+  }, [teamMembers, runs, versions]);
+
+  const visibleRuns = memberFilter
+    ? runs.filter((run) => sameName(run.executedBy, memberFilter))
+    : runs;
+  const memberPrompts = memberFilter
+    ? versions.filter((entry) => sameName(entry.finalizedBy, memberFilter))
+    : [];
+
   function openRecordForm() {
     const defaultVersion = versions[0]?.version || '';
+    setRunKind(versions.length ? 'run' : 'progress');
     setRunPromptVersion(defaultVersion ? String(defaultVersion) : '');
     setRunStatus('success');
     setRunNotes('');
@@ -111,11 +142,12 @@ export function PromptRunRecorder({
 
   async function saveRun(event) {
     event.preventDefault();
+    const isRun = runKind === 'run';
     if (!jpegFile) {
-      setError('Choose a JPEG result image.');
+      setError('Choose a JPEG image.');
       return;
     }
-    if (!runPromptVersion) {
+    if (isRun && !runPromptVersion) {
       setError('Select a finalized prompt version.');
       return;
     }
@@ -124,22 +156,26 @@ export function PromptRunRecorder({
     setNotice('');
     try {
       const jpegBase64 = await fileToJpegDataUrl(jpegFile);
+      const payload = {
+        kind: runKind,
+        notes: runNotes,
+        jpegBase64,
+        contentType: 'image/jpeg',
+        executedBy: displayName,
+      };
+      if (isRun) {
+        payload.promptVersion = Number(runPromptVersion);
+        payload.status = runStatus;
+      }
       const response = await fetch(`/api/rooms/${encodeURIComponent(slug)}/runs`, {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          promptVersion: Number(runPromptVersion),
-          status: runStatus,
-          notes: runNotes,
-          jpegBase64,
-          contentType: 'image/jpeg',
-          executedBy: displayName,
-        }),
+        body: JSON.stringify(payload),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(data.error || 'Could not save run.');
-      setNotice(`Saved run for prompt v${runPromptVersion}.`);
+      setNotice(isRun ? `Saved result for prompt v${runPromptVersion}.` : 'Saved work progress.');
       setRecording(false);
       setJpegFile(null);
       if (jpegPreviewUrl) URL.revokeObjectURL(jpegPreviewUrl);
@@ -219,18 +255,8 @@ export function PromptRunRecorder({
     };
   }, [runDetail, closeRunDetail]);
 
-  if (!versions.length) {
-    return (
-      <div className="prompt-runs" data-testid="prompt-runs">
-        <h3>Result images</h3>
-        <p className="hint">
-          Finalize a prompt version first, then you can record a manual run and attach a JPEG of the result.
-        </p>
-      </div>
-    );
-  }
-
   const selectedPromptForRun = versions.find((entry) => String(entry.version) === String(runPromptVersion));
+  const detailIsRun = runDetail?.kind !== 'progress';
   const runStatusLabel = String(runDetail?.status || '').toUpperCase();
   const runStatusTone = runStatusLabel === 'FAILURE' ? 'failure' : 'success';
 
@@ -251,10 +277,12 @@ export function PromptRunRecorder({
         >
           <header className="run-detail-modal__header">
             <div className="run-detail-modal__title-block">
-              <h3 id={runDetailTitleId}>Run detail</h3>
-              <span className={`run-detail-status run-detail-status--${runStatusTone}`}>
-                {runStatusLabel || 'UNKNOWN'}
-              </span>
+              <h3 id={runDetailTitleId}>{detailIsRun ? 'Run detail' : 'Work progress'}</h3>
+              {detailIsRun ? (
+                <span className={`run-detail-status run-detail-status--${runStatusTone}`}>
+                  {runStatusLabel || 'UNKNOWN'}
+                </span>
+              ) : null}
             </div>
             <button
               type="button"
@@ -270,25 +298,27 @@ export function PromptRunRecorder({
           <div className="run-detail-modal__body">
             <div className="run-detail-modal__media">
               {runImageUrl ? (
-                <img src={runImageUrl} alt={`Result for run ${runDetail.id}`} />
+                <img src={runImageUrl} alt={`Image for entry ${runDetail.id}`} />
               ) : (
-                <p className="hint">Loading result image…</p>
+                <p className="hint">Loading image…</p>
               )}
             </div>
 
             <div className="run-detail-modal__sidebar">
               <dl className="run-meta">
+                {detailIsRun ? (
+                  <div>
+                    <dt>Prompt version</dt>
+                    <dd>v{runDetail.promptVersion}</dd>
+                  </div>
+                ) : null}
                 <div>
-                  <dt>Prompt version</dt>
-                  <dd>v{runDetail.promptVersion}</dd>
-                </div>
-                <div>
-                  <dt>Executed by</dt>
+                  <dt>Saved by</dt>
                   <dd>{runDetail.executedBy}</dd>
                 </div>
                 {runDetail.executedAt ? (
                   <div>
-                    <dt>Executed at</dt>
+                    <dt>Saved at</dt>
                     <dd>{new Date(runDetail.executedAt).toLocaleString()}</dd>
                   </div>
                 ) : null}
@@ -317,72 +347,104 @@ export function PromptRunRecorder({
   return (
     <div className="prompt-runs" data-testid="prompt-runs">
       <div className="prompt-runs-heading">
-        <h3>Result images</h3>
+        <h3>Work log</h3>
         {!recording ? (
           <button type="button" className="prompt-runs-record" onClick={openRecordForm} data-testid="prompt-record-run">
-            Record result
+            Add image
           </button>
         ) : null}
       </div>
       <p className="hint">
-        Run the finalized prompt yourself, then upload a JPEG of the result. This app does not execute prompts.
+        Attach a JPEG of a prompt result or of your own work progress. This app does not execute prompts.
       </p>
 
       {error ? <p className="error" role="alert">{error}</p> : null}
       {notice ? <p className="hint" role="status">{notice}</p> : null}
 
       {recording ? (
-        <form className="run-form" onSubmit={saveRun} aria-label="Record manual run">
-          <label>
-            Prompt version
-            <select
-              value={runPromptVersion}
-              onChange={(event) => setRunPromptVersion(event.target.value)}
-              required
-              data-testid="prompt-run-version"
-            >
-              <option value="" disabled>Select a finalized version</option>
-              {versions.map((entry) => (
-                <option key={entry.version} value={entry.version}>
-                  {`v${entry.version}${entry.name ? ` — ${entry.name}` : ''}`}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          {selectedPromptForRun ? (
-            <label>
-              Prompt snapshot (read-only)
-              <textarea value={selectedPromptForRun.prompt || ''} readOnly rows={4} />
-            </label>
-          ) : null}
-
+        <form className="run-form" onSubmit={saveRun} aria-label="Add work log image">
           <fieldset className="run-status">
-            <legend>Status</legend>
+            <legend>Type</legend>
             <label>
               <input
                 type="radio"
-                name="run-status"
-                value="success"
-                checked={runStatus === 'success'}
-                onChange={() => setRunStatus('success')}
+                name="run-kind"
+                value="run"
+                checked={runKind === 'run'}
+                onChange={() => setRunKind('run')}
+                disabled={!versions.length}
               />
-              Success
+              Prompt result
             </label>
             <label>
               <input
                 type="radio"
-                name="run-status"
-                value="failure"
-                checked={runStatus === 'failure'}
-                onChange={() => setRunStatus('failure')}
+                name="run-kind"
+                value="progress"
+                checked={runKind === 'progress'}
+                onChange={() => setRunKind('progress')}
               />
-              Failure
+              Work progress
             </label>
           </fieldset>
+          {!versions.length ? (
+            <p className="hint">Finalize a prompt version to record a prompt result.</p>
+          ) : null}
+
+          {runKind === 'run' ? (
+            <>
+              <label>
+                Prompt version
+                <select
+                  value={runPromptVersion}
+                  onChange={(event) => setRunPromptVersion(event.target.value)}
+                  required
+                  data-testid="prompt-run-version"
+                >
+                  <option value="" disabled>Select a finalized version</option>
+                  {versions.map((entry) => (
+                    <option key={entry.version} value={entry.version}>
+                      {`v${entry.version}${entry.name ? ` — ${entry.name}` : ''}`}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              {selectedPromptForRun ? (
+                <label>
+                  Prompt snapshot (read-only)
+                  <textarea value={selectedPromptForRun.prompt || ''} readOnly rows={4} />
+                </label>
+              ) : null}
+
+              <fieldset className="run-status">
+                <legend>Status</legend>
+                <label>
+                  <input
+                    type="radio"
+                    name="run-status"
+                    value="success"
+                    checked={runStatus === 'success'}
+                    onChange={() => setRunStatus('success')}
+                  />
+                  Success
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="run-status"
+                    value="failure"
+                    checked={runStatus === 'failure'}
+                    onChange={() => setRunStatus('failure')}
+                  />
+                  Failure
+                </label>
+              </fieldset>
+            </>
+          ) : null}
 
           <label>
-            Result JPEG
+            JPEG image
             <input
               type="file"
               accept="image/jpeg,.jpg,.jpeg"
@@ -407,9 +469,11 @@ export function PromptRunRecorder({
             />
           </label>
 
+          <p className="hint">Saved as {displayName}.</p>
+
           <div className="prompt-actions">
             <button type="submit" disabled={savingRun} data-testid="prompt-run-save">
-              {savingRun ? 'Saving…' : 'Save run'}
+              {savingRun ? 'Saving…' : 'Save'}
             </button>
             <button
               type="button"
@@ -423,23 +487,73 @@ export function PromptRunRecorder({
         </form>
       ) : null}
 
-      <div className="run-history" aria-label="Run history">
-        <h4>Run history</h4>
-        {runs.length === 0 ? (
-          <p className="hint">No result images recorded yet.</p>
+      <div className="run-history" aria-label="Work history">
+        <h4>History</h4>
+
+        {filterMembers.length ? (
+          <div className="run-member-filter" role="group" aria-label="Show history for" data-testid="run-member-filter">
+            <button
+              type="button"
+              className={memberFilter === ALL_MEMBERS ? 'active' : ''}
+              aria-pressed={memberFilter === ALL_MEMBERS}
+              onClick={() => setMemberFilter(ALL_MEMBERS)}
+            >
+              Everyone
+            </button>
+            {filterMembers.map((member) => (
+              <button
+                key={member}
+                type="button"
+                className={sameName(memberFilter, member) ? 'active' : ''}
+                aria-pressed={sameName(memberFilter, member)}
+                onClick={() => setMemberFilter(member)}
+              >
+                {member}
+              </button>
+            ))}
+          </div>
+        ) : null}
+
+        {memberFilter ? (
+          <div className="run-member-prompts">
+            <h4>Prompts saved by {memberFilter}</h4>
+            {memberPrompts.length === 0 ? (
+              <p className="hint">No prompt versions saved yet.</p>
+            ) : (
+              <ul>
+                {memberPrompts.map((entry) => (
+                  <li key={entry.version}>
+                    <details className="run-prompt-entry">
+                      <summary>
+                        {`v${entry.version}${entry.name ? ` — ${entry.name}` : ''}`}
+                        {entry.createdAt ? ` · ${new Date(entry.createdAt).toLocaleString()}` : ''}
+                      </summary>
+                      <pre>{entry.prompt}</pre>
+                    </details>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <h4>Images saved by {memberFilter}</h4>
+          </div>
+        ) : null}
+
+        {visibleRuns.length === 0 ? (
+          <p className="hint">No images recorded yet.</p>
         ) : (
           <ul>
-            {runs.map((run) => (
+            {visibleRuns.map((run) => (
               <li key={run.id}>
                 <div className={`run-card${selectedRunId === run.id ? ' selected' : ''}`}>
                   <div>
-                    <strong>Run #{String(run.id).slice(0, 12)}</strong>
+                    <strong>
+                      {run.kind === 'progress' ? 'Work progress' : `Prompt v${run.promptVersion} result`}
+                    </strong>
                     <p className="hint">
-                      Prompt v{run.promptVersion} · {run.executedBy}
+                      {run.executedBy}
+                      {run.kind === 'progress' ? '' : ` · ${String(run.status || '').toUpperCase()}`}
                       <br />
                       {run.executedAt ? new Date(run.executedAt).toLocaleString() : ''}
-                      {' · '}
-                      {String(run.status || '').toUpperCase()}
                     </p>
                   </div>
                   <button

@@ -119,6 +119,7 @@ export default async function RoomPage({ params, searchParams }) {
                   slug={room.slug}
                   inviteToken={inviteToken}
                   roomMeta={room}
+                  teamMembers={[...getRoomPolicy().teamMembers]}
                 />
               </section>
             ) : (

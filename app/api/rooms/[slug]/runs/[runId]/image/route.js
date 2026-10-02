@@ -1,13 +1,11 @@
 import { NextResponse } from 'next/server';
-import { getRunStore } from '../../../../../../../lib/runs/singleton.js';
-import { createRoomRepository } from '../../../../../../../lib/rooms/repository.js';
-import { getRoomBySlug } from '../../../../../../../lib/rooms/lookup.js';
+import { getRunImage, RunError } from '../../../../../../../lib/runs/service.js';
 import { redactForLog } from '../../../../../../../lib/security/redact.js';
 
 export const dynamic = 'force-dynamic';
 
 /**
- * GET /api/rooms/[slug]/runs/[runId]/image — JPEG bytes for a manual run result.
+ * GET /api/rooms/[slug]/runs/[runId]/image — JPEG bytes for a work-log entry.
  */
 export async function GET(_request, { params }) {
   const slug = params?.slug;
@@ -17,14 +15,7 @@ export async function GET(_request, { params }) {
   }
 
   try {
-    const room = await getRoomBySlug(slug, { repository: createRoomRepository() });
-    if (!room.ok) {
-      return NextResponse.json({ error: 'Room not found.' }, { status: 404 });
-    }
-    const jpeg = await getRunStore().exclusive(() => getRunStore().getJpeg(slug, runId));
-    if (!jpeg) {
-      return NextResponse.json({ error: 'Run not found.' }, { status: 404 });
-    }
+    const jpeg = await getRunImage({ slug, runId });
     return new NextResponse(jpeg, {
       status: 200,
       headers: {
@@ -34,6 +25,9 @@ export async function GET(_request, { params }) {
       },
     });
   } catch (error) {
+    if (error instanceof RunError) {
+      return NextResponse.json({ error: error.message }, { status: error.httpStatus });
+    }
     console.error('run_image_failed', redactForLog({ message: error?.message, slug, runId }));
     return NextResponse.json({ error: 'Could not load run image.' }, { status: 500 });
   }
