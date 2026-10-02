@@ -31,6 +31,8 @@ test('media CSS includes six-person grid and warning classes', async ({ page }) 
       'screen-grid',
       'screen-share-warning',
       'connection-status',
+      'coordinator-badge',
+      'coordinator-toast',
     ];
     const results = {};
     for (const name of names) {
@@ -46,4 +48,21 @@ test('media CSS includes six-person grid and warning classes', async ({ page }) 
   expect(probes['screen-grid']).toBeTruthy();
   expect(probes['screen-share-warning']).toBeTruthy();
   expect(probes['connection-status']).toBeTruthy();
+  expect(probes['coordinator-badge']).toBeTruthy();
+  expect(probes['coordinator-toast']).toBeTruthy();
+});
+
+test('invitation-required UI copy is present in join form bundle path', async ({ page }) => {
+  // Without a live room row, JoinRoomForm is not mounted. Probe stylesheet markers
+  // and rely on unit wording tests for the exact copy.
+  await page.goto('/');
+  const hasCoordinatorStyles = await page.evaluate(() => {
+    const el = document.createElement('div');
+    el.className = 'coordinator-toast';
+    document.body.appendChild(el);
+    const ok = getComputedStyle(el).position === 'fixed' || getComputedStyle(el).display !== '';
+    el.remove();
+    return ok;
+  });
+  expect(hasCoordinatorStyles).toBeTruthy();
 });

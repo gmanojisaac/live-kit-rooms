@@ -758,6 +758,26 @@ main.room-page {
   background: var(--gm-red-subtle);
   color: #f28b82;
 }
+.owner-participant-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+.owner-participant-list > li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.owner-participant-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
 
 /* ==========================================================================
    Live Meet In-Call Workspace (Full Viewport 100vh)
@@ -892,21 +912,30 @@ main.room-page:has(.media-workspace) .join-section {
 .screen-grid {
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  width: 100%;
+  height: 100%;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+  grid-auto-rows: minmax(0, 1fr);
   gap: 0.85rem;
-  align-content: center;
-  justify-content: center;
-  padding: 0.25rem 0;
+  align-content: stretch;
+  justify-content: stretch;
+  padding: 0;
 }
 
+.screen-grid[data-share-count="1"],
 .screen-grid--focused {
-  grid-template-columns: 1fr;
-  grid-auto-rows: 1fr;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .screen-tile {
   position: relative;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
   border-radius: 12px;
   overflow: hidden;
   background: #121212;
@@ -980,22 +1009,80 @@ main.room-page:has(.media-workspace) .join-section {
 .camera-grid {
   flex: 1;
   min-height: 0;
+  width: 100%;
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  grid-auto-rows: minmax(180px, 1fr);
   gap: 0.85rem;
-  align-content: center;
-  justify-content: center;
+  align-content: stretch;
+  justify-content: stretch;
   padding: 0.5rem;
 }
 
-/* When a screen is sharing, camera tiles become a neat bottom filmstrip or sidebar strip */
+/* One or two people: a single row that uses the full stage */
+.camera-grid[data-count="1"] {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.camera-grid[data-count="2"] {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: minmax(0, 1fr);
+}
+
+/* Presenting: share fills the stage, cameras sit in a right-hand strip (Meet layout) */
+.meeting-stage:has(.screen-grid:not(:empty)) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 168px;
+  grid-template-rows: auto minmax(0, 1fr);
+  align-items: stretch;
+}
+
+.meeting-stage:has(.screen-grid:not(:empty)) .meeting-stage-topbar {
+  grid-column: 1 / -1;
+}
+
+.meeting-stage:has(.screen-grid:not(:empty)) .screen-section {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  position: relative;
+}
+
+.meeting-stage:has(.screen-grid:not(:empty)) .screen-section > .section-heading {
+  position: absolute;
+  top: 0.4rem;
+  left: 0.5rem;
+  right: 0.5rem;
+  z-index: 4;
+  padding: 0;
+  pointer-events: none;
+}
+
+.meeting-stage:has(.screen-grid:not(:empty)) .screen-section > .section-heading button,
+.meeting-stage:has(.screen-grid:not(:empty)) .screen-section > .section-heading a {
+  pointer-events: auto;
+}
+
+.meeting-stage:has(.screen-grid:not(:empty)) .participant-presence {
+  flex: none;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+}
+
 .meeting-stage:has(.screen-grid:not(:empty)) .camera-grid {
-  flex: 0 0 110px;
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
   display: flex;
-  flex-direction: row;
-  overflow-x: auto;
-  gap: 0.65rem;
-  padding: 0.25rem 0.5rem;
+  flex-direction: column;
+  overflow-x: hidden;
+  overflow-y: auto;
+  gap: 0.5rem;
+  padding: 0;
   align-content: stretch;
 }
 
@@ -1010,14 +1097,22 @@ main.room-page:has(.media-workspace) .join-section {
   justify-content: center;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
   transition: border-color 0.2s;
-  min-height: 140px;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.meeting-stage:has(.screen-grid:not(:empty)) .camera-tile-wrap {
+  height: auto;
+  width: 100%;
+  flex: 0 0 96px;
 }
 
 .meeting-stage:has(.screen-grid:not(:empty)) .camera-grid .lk-participant-tile {
-  min-height: auto;
-  height: 100px;
-  width: 160px;
-  flex: 0 0 160px;
+  min-height: 0;
+  height: 96px;
+  width: 100%;
+  flex: 0 0 96px;
 }
 
 .camera-grid .lk-participant-tile[data-lk-speaking="true"] {
@@ -1505,6 +1600,61 @@ main.room-page:has(.media-workspace) .join-section {
   background: var(--gm-surface-elevated);
 }
 
+.run-member-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.65rem;
+}
+
+.run-member-filter button {
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.3rem 0.75rem;
+  border-radius: 14px;
+  border: 1px solid var(--gm-border);
+  background: var(--gm-surface-elevated);
+  color: var(--gm-text);
+  cursor: pointer;
+}
+
+.run-member-filter button.active {
+  border-color: var(--gm-blue);
+  background: var(--gm-blue-subtle);
+}
+
+.run-member-prompts {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-bottom: 0.4rem;
+}
+
+.run-member-prompts h4 {
+  margin: 0.35rem 0 0;
+}
+
+.run-prompt-entry {
+  font-size: 0.8rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 10px;
+  border: 1px solid var(--gm-border);
+  background: var(--gm-surface-elevated);
+  color: var(--gm-text);
+}
+
+.run-prompt-entry summary {
+  cursor: pointer;
+}
+
+.run-prompt-entry pre {
+  margin: 0.5rem 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  color: var(--gm-text-muted);
+}
+
 .run-card.selected {
   border-color: var(--gm-blue);
   background: var(--gm-blue-subtle);
@@ -1764,6 +1914,58 @@ main.room-page:has(.media-workspace) .join-section {
 .gm-people-name span.you {
   color: var(--gm-text-muted);
   font-size: 0.85rem;
+}
+
+.coordinator-badge {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #0b57d0;
+  background: rgba(11, 87, 208, 0.12);
+  vertical-align: middle;
+}
+
+.coordinator-badge--tile {
+  position: absolute;
+  left: 0.5rem;
+  top: 0.5rem;
+  z-index: 2;
+  margin-left: 0;
+}
+
+.camera-tile-wrap {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+}
+
+.coordinator-toast {
+  position: fixed;
+  top: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  padding: 0.75rem 1.1rem;
+  border-radius: 10px;
+  background: rgba(32, 33, 36, 0.94);
+  color: #fff;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.28);
+  font-size: 0.95rem;
+  max-width: min(92vw, 28rem);
+  text-align: center;
+}
+
+.gm-info-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
 }
 
 .gm-people-icons {
@@ -2206,6 +2408,31 @@ main.room-page:has(.media-workspace) .join-section {
 }
 
 /* Responsive adjustments */
+@media (max-width: 720px) {
+  .meeting-stage:has(.screen-grid:not(:empty)) {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+
+  .meeting-stage:has(.screen-grid:not(:empty)) .participant-presence {
+    height: auto;
+  }
+
+  .meeting-stage:has(.screen-grid:not(:empty)) .camera-grid {
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+    height: 96px;
+  }
+
+  .meeting-stage:has(.screen-grid:not(:empty)) .camera-tile-wrap,
+  .meeting-stage:has(.screen-grid:not(:empty)) .camera-grid .lk-participant-tile {
+    width: 148px;
+    height: 88px;
+    flex: 0 0 148px;
+  }
+}
+
 @media (max-width: 900px) {
   .gm-home-hero {
     grid-template-columns: 1fr;

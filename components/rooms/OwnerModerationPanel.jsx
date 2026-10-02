@@ -4,6 +4,8 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
+import { COORDINATOR_TRANSFER_HANDOFF_EVENT } from '@/lib/rooms/coordinator-transfer-client.js';
+
 
 
 function friendlyError(payload, fallback) {
@@ -18,7 +20,7 @@ function friendlyError(payload, fallback) {
 
     case 'OWNER_FORBIDDEN':
 
-      return 'You are not authorized as this room’s owner.';
+      return 'You are not authorized as this room’s coordinator.';
 
     case 'ROOM_ENDED':
 
@@ -35,6 +37,14 @@ function friendlyError(payload, fallback) {
     case 'INVITE_NOT_FOUND':
 
       return 'Invitation not found.';
+
+    case 'TRANSFER_INVALID':
+
+    case 'TRANSFER_EXPIRED':
+
+    case 'TRANSFER_STALE':
+
+      return 'That coordinator transfer is no longer valid.';
 
     case 'LIVEKIT_UNAVAILABLE':
 
@@ -56,7 +66,7 @@ function friendlyError(payload, fallback) {
 
 /**
 
- * Owner-only moderation panel (AUTH-05).
+ * Coordinator moderation panel (AUTH-05 + role transfer).
 
  * Relies on the HTTP-only owner session cookie — never sends ownerId.
 
@@ -64,7 +74,11 @@ function friendlyError(payload, fallback) {
 
 export default function OwnerModerationPanel({ slug, initialRoom }) {
 
-  const [visible, setVisible] = useState(Boolean(initialRoom?.isOwner));
+  const [visible, setVisible] = useState(
+
+    Boolean(initialRoom?.isCoordinator ?? initialRoom?.isOwner),
+
+  );
 
   const [roomStatus, setRoomStatus] = useState(initialRoom?.status || 'active');
 
@@ -136,9 +150,13 @@ export default function OwnerModerationPanel({ slug, initialRoom }) {
 
       const data = await response.json();
 
-      const isOwner = Boolean(data.isOwner || data.room?.isOwner);
+      const isCoordinator = Boolean(
 
-      setVisible(isOwner);
+        data.isCoordinator ?? data.isOwner ?? data.room?.isCoordinator ?? data.room?.isOwner,
+
+      );
+
+      setVisible(isCoordinator);
 
       if (data.room?.status) setRoomStatus(data.room.status);
 
@@ -269,6 +287,72 @@ export default function OwnerModerationPanel({ slug, initialRoom }) {
     setMessage(`Removed ${label}.`);
 
     setParticipants((prev) => prev.filter((p) => p.identity !== identity));
+
+  }
+
+
+
+  async function onMakeCoordinator(identity, displayName) {
+
+    const label = displayName || identity;
+
+    const result = await postAction('/transfer-coordinator', { identity }, {
+
+      confirmMessage:
+
+        `Make ${label} the coordinator? You will lose host controls after they accept.`,
+
+    });
+
+    if (!result) return;
+
+
+
+    if (typeof window !== 'undefined') {
+
+      window.dispatchEvent(new CustomEvent(COORDINATOR_TRANSFER_HANDOFF_EVENT, {
+
+        detail: {
+
+          claimToken: result.claimToken,
+
+          expiresAt: result.expiresAt,
+
+          targetIdentity: result.targetIdentity || identity,
+
+          slug,
+
+        },
+
+      }));
+
+    }
+
+
+
+    setMessage(`Transfer sent to ${label}. Waiting for them to accept…`);
+
+
+
+    // Refresh until we are no longer coordinator (claim completed) or timeout.
+
+    let attempts = 0;
+
+    const poll = async () => {
+
+      attempts += 1;
+
+      await refreshRoom();
+
+      if (attempts < 50) {
+
+        setTimeout(poll, 2500);
+
+      }
+
+    };
+
+    setTimeout(poll, 2000);
 
   }
 
@@ -414,19 +498,37 @@ export default function OwnerModerationPanel({ slug, initialRoom }) {
 
                 </span>
 
-                <button
+                <span className="owner-participant-actions">
 
-                  type="button"
+                  <button
 
-                  onClick={() => onRemove(p.identity, p.name)}
+                    type="button"
 
-                  disabled={Boolean(busy) || inactive}
+                    onClick={() => onMakeCoordinator(p.identity, p.name)}
 
-                >
+                    disabled={Boolean(busy) || inactive}
 
-                  {busy === '/remove' ? 'Removing…' : 'Remove'}
+                  >
 
-                </button>
+                    {busy === '/transfer-coordinator' ? 'Transferring…' : 'Make coordinator'}
+
+                  </button>
+
+                  <button
+
+                    type="button"
+
+                    onClick={() => onRemove(p.identity, p.name)}
+
+                    disabled={Boolean(busy) || inactive}
+
+                  >
+
+                    {busy === '/remove' ? 'Removing…' : 'Remove'}
+
+                  </button>
+
+                </span>
 
               </li>
 

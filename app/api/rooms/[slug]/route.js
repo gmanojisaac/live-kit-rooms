@@ -52,8 +52,12 @@ export async function GET(request, { params }) {
 
     return NextResponse.json(
       {
-        room: publicRoom,
+        room: {
+          ...publicRoom,
+          isCoordinator: ownerCtx.isOwner,
+        },
         isOwner: ownerCtx.isOwner,
+        isCoordinator: ownerCtx.isOwner,
         roomStatus: publicRoom.status,
       },
       { headers: { 'Cache-Control': 'no-store' } },

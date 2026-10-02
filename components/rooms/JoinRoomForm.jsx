@@ -7,6 +7,11 @@ import {
   clearOwnerJoinHandoff,
   readOwnerJoinHandoff,
 } from '@/lib/rooms/owner-join-handoff.js';
+import {
+  clearRejoinToken,
+  readRejoinToken,
+  saveRejoinToken,
+} from '@/lib/rooms/rejoin-storage.js';
 
 const ownerAutoJoinRequests = new Map();
 
@@ -25,15 +30,18 @@ function runOwnerAutoJoin(slug, task) {
   return promise;
 }
 
-async function requestAdmission({ slug, inviteToken, displayName, accessCode }) {
+async function requestAdmission({ slug, inviteToken, displayName, accessCode, rejoinToken }) {
+  const body = {
+    inviteToken,
+    displayName,
+    accessCode,
+  };
+  if (rejoinToken) body.rejoinToken = rejoinToken;
+
   const response = await fetch(`/api/rooms/${encodeURIComponent(slug)}/join`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      inviteToken,
-      displayName,
-      accessCode,
-    }),
+    body: JSON.stringify(body),
   });
   const payload = await response.json().catch(() => ({}));
   return {
@@ -47,7 +55,7 @@ async function requestAdmission({ slug, inviteToken, displayName, accessCode }) 
  * Live Meet Pre-Join Lobby ("Green Room") + Media Room Handoff.
  * Allows camera/mic preview test before admission into LiveKit session.
  */
-export default function JoinRoomForm({ slug, inviteToken, roomMeta }) {
+export default function JoinRoomForm({ slug, inviteToken, roomMeta, teamMembers = [] }) {
   const [displayName, setDisplayName] = useState('');
   const [accessCode, setAccessCode] = useState('');
   const [busy, setBusy] = useState(false);
@@ -112,6 +120,10 @@ export default function JoinRoomForm({ slug, inviteToken, roomMeta }) {
 
   function applyAdmission(payload) {
     clearOwnerJoinHandoff();
+    const nextRejoin = payload?.participant?.rejoinToken;
+    if (typeof nextRejoin === 'string' && nextRejoin) {
+      saveRejoinToken(slug, nextRejoin);
+    }
     setJoinMediaPrefs({ video: cameraPreviewOn, audio: micPreviewOn });
     setCameraPreviewOn(false);
     setMicPreviewOn(false);
@@ -128,6 +140,34 @@ export default function JoinRoomForm({ slug, inviteToken, roomMeta }) {
     setAccessCode('');
   }
 
+  async function admitWithOptionalRejoin({ displayName: name, accessCode: code }) {
+    const storedRejoin = readRejoinToken(slug);
+    let result = await requestAdmission({
+      slug,
+      inviteToken,
+      displayName: name,
+      accessCode: code,
+      rejoinToken: storedRejoin || undefined,
+    });
+
+    if (
+      !result.ok
+      && storedRejoin
+      && (result.payload?.code === 'REJOIN_INVALID'
+        || result.payload?.code === 'REJOIN_REVOKED')
+    ) {
+      clearRejoinToken(slug);
+      result = await requestAdmission({
+        slug,
+        inviteToken,
+        displayName: name,
+        accessCode: code,
+      });
+    }
+
+    return result;
+  }
+
   useLayoutEffect(() => {
     if (!inviteToken) return undefined;
     const handoff = readOwnerJoinHandoff(slug);
@@ -140,9 +180,7 @@ export default function JoinRoomForm({ slug, inviteToken, roomMeta }) {
     setBusy(true);
     setError('');
 
-    runOwnerAutoJoin(slug, () => requestAdmission({
-      slug,
-      inviteToken,
+    runOwnerAutoJoin(slug, () => admitWithOptionalRejoin({
       displayName: handoff.displayName,
       accessCode: handoff.accessCode,
     })).then((result) => {
@@ -175,9 +213,7 @@ export default function JoinRoomForm({ slug, inviteToken, roomMeta }) {
     setEndedMessage('');
 
     try {
-      const result = await requestAdmission({
-        slug,
-        inviteToken,
+      const result = await admitWithOptionalRejoin({
         displayName,
         accessCode,
       });
@@ -199,12 +235,15 @@ export default function JoinRoomForm({ slug, inviteToken, roomMeta }) {
   function handleSessionEnd(info) {
     setAdmission(null);
     setOwnerJoinPhase('form');
+    if (info?.kind === 'removed' || info?.kind === 'ended') {
+      clearRejoinToken(slug);
+    }
     if (info?.message) {
       setEndedMessage(info.message);
     } else if (info?.kind === 'left') {
       setEndedMessage('You left the meeting.');
     } else if (info?.kind === 'removed') {
-      setEndedMessage('You were removed from this room by the owner.');
+      setEndedMessage('You were removed from this room by the coordinator.');
     } else if (info?.kind === 'ended') {
       setEndedMessage('This meeting has ended.');
     }
@@ -215,7 +254,8 @@ export default function JoinRoomForm({ slug, inviteToken, roomMeta }) {
       <div className="gm-create-card" style={{ maxWidth: '480px', margin: '2rem auto' }}>
         <h2>Invitation required</h2>
         <p className="hint" role="status">
-          Open an invitation link that includes the invite token to join this meeting room.
+          Invitation link + access code are required to join. Open an invitation link that includes
+          the invite token — the meeting ID alone cannot authorize entry.
         </p>
       </div>
     );
@@ -238,7 +278,7 @@ export default function JoinRoomForm({ slug, inviteToken, roomMeta }) {
       <div className="gm-create-card" style={{ maxWidth: '480px', margin: '2rem auto', textAlign: 'center' }}>
         <h2>Joining the meeting…</h2>
         <p className="hint" role="status">
-          Signing in as {displayName || 'the host'} with the access code from when this room was created.
+          Signing in as {displayName || 'the coordinator'} with the access code from when this room was created.
         </p>
       </div>
     );
@@ -255,7 +295,6 @@ export default function JoinRoomForm({ slug, inviteToken, roomMeta }) {
       ) : null}
 
       <div className="gm-lobby-wrapper">
-        {/* Left Column: Camera / Mic Preview (Live Meet Green Room) */}
         <div className="gm-lobby-preview-col">
           <div className="gm-lobby-preview-card">
             {cameraPreviewOn ? (
@@ -296,29 +335,45 @@ export default function JoinRoomForm({ slug, inviteToken, roomMeta }) {
           </p>
         </div>
 
-        {/* Right Column: Credentials & Join Form */}
         <div className="gm-lobby-credentials-col">
           <div className="gm-lobby-title-block">
             <h1>Ready to join?</h1>
             <div className="gm-lobby-room-badge">
-              <span>Meeting:</span>
+              <span>Meeting ID (reference only):</span>
               <code>{slug}</code>
             </div>
           </div>
 
           <form onSubmit={onSubmit} className="join-room-form">
-            <label>
-              Display name
-              <input
-                name="displayName"
-                placeholder="What's your name?"
-                value={displayName}
-                onChange={(e) => setDisplayName(e.target.value)}
-                required
-                maxLength={40}
-                autoComplete="nickname"
-              />
-            </label>
+            {teamMembers.length ? (
+              <label>
+                Your name
+                <select
+                  name="displayName"
+                  value={displayName}
+                  onChange={(e) => setDisplayName(e.target.value)}
+                  required
+                >
+                  <option value="" disabled>Select your name</option>
+                  {teamMembers.map((member) => (
+                    <option key={member} value={member}>{member}</option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <label>
+                Display name
+                <input
+                  name="displayName"
+                  placeholder="What's your name?"
+                  value={displayName}
+                  onChange={(e) => setDisplayName(e.target.value)}
+                  required
+                  maxLength={40}
+                  autoComplete="nickname"
+                />
+              </label>
+            )}
 
             <label>
               Access code
@@ -349,7 +404,8 @@ export default function JoinRoomForm({ slug, inviteToken, roomMeta }) {
           </form>
 
           <p className="hint">
-            Up to 6 participants can collaborate and share their screens simultaneously.
+            Invitation link + access code are required to join. Up to 6 participants can collaborate
+            and share their screens simultaneously.
           </p>
         </div>
       </div>

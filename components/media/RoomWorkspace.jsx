@@ -9,7 +9,7 @@ import {
   useParticipants,
   useRoomContext,
 } from '@livekit/components-react';
-import { Track } from 'livekit-client';
+import { RoomEvent, Track } from 'livekit-client';
 import { ConnectionStatus } from './ConnectionStatus.jsx';
 import { ScreenShareGrid } from './ScreenShareGrid.jsx';
 import { ParticipantPresence } from './ParticipantPresence.jsx';
@@ -18,6 +18,17 @@ import { NetworkQualityBanner } from './NetworkQualityBanner.jsx';
 import { MediaDiagnostics } from './MediaDiagnostics.jsx';
 import { FocusQualityController } from './FocusQualityController.jsx';
 import { CollaborativePromptEditor } from '@/components/prompt/CollaborativePromptEditor.jsx';
+import {
+  COORDINATOR_TRANSFER_DATA_TOPIC,
+  COORDINATOR_TRANSFER_HANDOFF_EVENT,
+  parseCoordinatorTransferPayload,
+  publishCoordinatorTransfer,
+} from '@/lib/rooms/coordinator-transfer-client.js';
+import {
+  COORDINATOR_ROLE_DATA_TOPIC,
+  parseCoordinatorRolePayload,
+  publishCoordinatorRole,
+} from '@/lib/rooms/coordinator-role-client.js';
 import {
   MicIcon,
   CameraIcon,
@@ -32,12 +43,25 @@ import {
   FullscreenIcon,
 } from './LiveMeetIcons.jsx';
 
+const COORDINATOR_NOTICE_MS = 5000;
+
 async function postOwnerAction(slug, path, body = {}) {
   const response = await fetch(`/api/rooms/${encodeURIComponent(slug)}${path}`, {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
+  });
+  const payload = await response.json().catch(() => ({}));
+  return { ok: response.ok, status: response.status, payload };
+}
+
+async function claimCoordinatorRole(slug, claimToken, identity) {
+  const response = await fetch(`/api/rooms/${encodeURIComponent(slug)}/claim-coordinator`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ claimToken, identity }),
   });
   const payload = await response.json().catch(() => ({}));
   return { ok: response.ok, payload };
@@ -65,7 +89,9 @@ export function RoomWorkspace({
     isScreenShareEnabled = false,
   } = useLocalParticipant();
 
-  const isOwner = Boolean(roomMeta?.isOwner);
+  const [isCoordinator, setIsCoordinator] = useState(
+    Boolean(roomMeta?.isCoordinator ?? roomMeta?.isOwner),
+  );
   const [focusedId, setFocusedId] = useState(null);
   const [activeDrawerTab, setActiveDrawerTab] = useState(null); // 'people' | 'chat' | 'activities' | 'info' | null
   const [showMoreMenu, setShowMoreMenu] = useState(false);
@@ -74,15 +100,33 @@ export function RoomWorkspace({
   const [localReconnects, setLocalReconnects] = useState(0);
   const [timeStr, setTimeStr] = useState('');
   const [copiedCode, setCopiedCode] = useState(false);
+  const [copiedInvite, setCopiedInvite] = useState('');
   const [hostBusy, setHostBusy] = useState('');
   const [hostMessage, setHostMessage] = useState('');
   const [hostError, setHostError] = useState('');
   const [promptLocked, setPromptLocked] = useState(Boolean(roomMeta?.promptLocked));
   const [inviteRevoked, setInviteRevoked] = useState(false);
+  const [coordinatorNotice, setCoordinatorNotice] = useState('');
+  const [coordinatorIdentity, setCoordinatorIdentity] = useState('');
 
   const prevConnRef = useRef(livekitState);
   const focusContainerRef = useRef(null);
   const moreMenuRef = useRef(null);
+  const claimInFlightRef = useRef(false);
+  const coordinatorNoticeTimerRef = useRef(null);
+  const lastClaimTokenRef = useRef('');
+  const isCoordinatorRef = useRef(isCoordinator);
+
+  useEffect(() => {
+    isCoordinatorRef.current = isCoordinator;
+  }, [isCoordinator]);
+
+  useEffect(() => () => {
+    if (coordinatorNoticeTimerRef.current) {
+      clearTimeout(coordinatorNoticeTimerRef.current);
+      coordinatorNoticeTimerRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     function updateClock() {
@@ -197,6 +241,40 @@ export function RoomWorkspace({
     setTimeout(() => setCopiedCode(false), 2000);
   }
 
+  function copyInviteLink() {
+    if (typeof window === 'undefined') {
+      setCopiedInvite('Invite link is unavailable for this session.');
+      setTimeout(() => setCopiedInvite(''), 2500);
+      return;
+    }
+    try {
+      const url = new URL(window.location.href);
+      url.hash = '';
+      if (!url.searchParams.get('invite')) {
+        setCopiedInvite('Invite link is unavailable for this session.');
+        setTimeout(() => setCopiedInvite(''), 2500);
+        return;
+      }
+      navigator.clipboard?.writeText?.(url.toString());
+      setCopiedInvite('Invite link copied.');
+      setTimeout(() => setCopiedInvite(''), 2500);
+    } catch {
+      setCopiedInvite('Invite link is unavailable for this session.');
+      setTimeout(() => setCopiedInvite(''), 2500);
+    }
+  }
+
+  function showCoordinatorPromotionNotice() {
+    if (coordinatorNoticeTimerRef.current) {
+      clearTimeout(coordinatorNoticeTimerRef.current);
+    }
+    setCoordinatorNotice('You are now the coordinator for this meeting.');
+    coordinatorNoticeTimerRef.current = setTimeout(() => {
+      setCoordinatorNotice('');
+      coordinatorNoticeTimerRef.current = null;
+    }, COORDINATOR_NOTICE_MS);
+  }
+
   function toggleTab(tab) {
     setActiveDrawerTab((prev) => (prev === tab ? null : tab));
     setShowMoreMenu(false);
@@ -205,10 +283,167 @@ export function RoomWorkspace({
   const displayName = admission?.participant?.displayName || 'Participant';
   const title = roomMeta?.title || admission?.room?.title || 'Meeting';
   const slug = admission?.room?.slug || roomMeta?.slug || '';
+  const localIdentity = admission?.participant?.identity
+    || localParticipant?.identity
+    || '';
   const drawerOpen = Boolean(activeDrawerTab);
 
+  useEffect(() => {
+    setIsCoordinator(Boolean(roomMeta?.isCoordinator ?? roomMeta?.isOwner));
+  }, [roomMeta?.isCoordinator, roomMeta?.isOwner]);
+
+  const announceCoordinatorRole = useCallback(async (destinationIdentities) => {
+    if (!localParticipant?.identity || !isCoordinatorRef.current) return;
+    try {
+      await publishCoordinatorRole(localParticipant, localParticipant.identity, {
+        destinationIdentities,
+      });
+      setCoordinatorIdentity(localParticipant.identity);
+    } catch {
+      // informational only
+    }
+  }, [localParticipant]);
+
+  useEffect(() => {
+    if (!isCoordinator || !localParticipant?.identity) return undefined;
+    setCoordinatorIdentity(localParticipant.identity);
+    announceCoordinatorRole();
+    return undefined;
+  }, [isCoordinator, localParticipant?.identity, announceCoordinatorRole]);
+
+  useEffect(() => {
+    if (!room) return undefined;
+
+    const onParticipantConnected = (participant) => {
+      if (!isCoordinatorRef.current || !participant?.identity) return;
+      announceCoordinatorRole([participant.identity]);
+    };
+
+    const onParticipantDisconnected = (participant) => {
+      if (!participant?.identity) return;
+      setCoordinatorIdentity((current) => (
+        current === participant.identity ? '' : current
+      ));
+    };
+
+    room.on(RoomEvent.ParticipantConnected, onParticipantConnected);
+    room.on(RoomEvent.ParticipantDisconnected, onParticipantDisconnected);
+    return () => {
+      room.off(RoomEvent.ParticipantConnected, onParticipantConnected);
+      room.off(RoomEvent.ParticipantDisconnected, onParticipantDisconnected);
+    };
+  }, [room, announceCoordinatorRole]);
+
+  const refreshCoordinatorStatus = useCallback(async () => {
+    if (!slug) return;
+    try {
+      const response = await fetch(`/api/rooms/${encodeURIComponent(slug)}`, {
+        credentials: 'same-origin',
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      const next = Boolean(data.isCoordinator ?? data.isOwner ?? data.room?.isCoordinator ?? data.room?.isOwner);
+      setIsCoordinator(next);
+      if (!next && localParticipant?.identity && coordinatorIdentity === localParticipant.identity) {
+        setCoordinatorIdentity('');
+      }
+      if (typeof data.room?.promptLocked === 'boolean') {
+        setPromptLocked(data.room.promptLocked);
+      }
+    } catch {
+      // non-fatal
+    }
+  }, [slug, localParticipant?.identity, coordinatorIdentity]);
+
+  const acceptCoordinatorTransfer = useCallback(async (payload) => {
+    if (!payload?.claimToken || !payload?.slug) return;
+    if (payload.slug !== slug) return;
+    if (!localIdentity) return;
+    if (claimInFlightRef.current) return;
+    if (lastClaimTokenRef.current === payload.claimToken) return;
+    claimInFlightRef.current = true;
+    lastClaimTokenRef.current = payload.claimToken;
+    try {
+      const result = await claimCoordinatorRole(payload.slug, payload.claimToken, localIdentity);
+      if (!result.ok) {
+        lastClaimTokenRef.current = '';
+        setHostError(result.payload?.error || 'Unable to accept coordinator role.');
+        return;
+      }
+      setIsCoordinator(true);
+      if (localParticipant?.identity) {
+        setCoordinatorIdentity(localParticipant.identity);
+        publishCoordinatorRole(localParticipant, localParticipant.identity).catch(() => {});
+      }
+      showCoordinatorPromotionNotice();
+      setHostMessage('You are now the coordinator for this meeting.');
+      setHostError('');
+    } catch {
+      lastClaimTokenRef.current = '';
+      setHostError('Unable to accept coordinator role.');
+    } finally {
+      claimInFlightRef.current = false;
+    }
+  }, [slug, localIdentity, localParticipant]);
+
+  useEffect(() => {
+    if (!room) return undefined;
+
+    const onData = (payload, _participant, _kind, topic) => {
+      if (!topic || topic === COORDINATOR_TRANSFER_DATA_TOPIC) {
+        const parsed = parseCoordinatorTransferPayload(payload);
+        if (parsed) {
+          acceptCoordinatorTransfer(parsed);
+          return;
+        }
+      }
+      if (!topic || topic === COORDINATOR_ROLE_DATA_TOPIC) {
+        const role = parseCoordinatorRolePayload(payload);
+        if (role?.coordinatorIdentity) {
+          setCoordinatorIdentity(role.coordinatorIdentity);
+        }
+      }
+    };
+
+    room.on(RoomEvent.DataReceived, onData);
+    return () => {
+      room.off(RoomEvent.DataReceived, onData);
+    };
+  }, [room, acceptCoordinatorTransfer]);
+
+  useEffect(() => {
+    if (
+      !isCoordinator
+      && localParticipant?.identity
+      && coordinatorIdentity === localParticipant.identity
+    ) {
+      setCoordinatorIdentity('');
+    }
+  }, [isCoordinator, localParticipant?.identity, coordinatorIdentity]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+
+    function onHandoff(event) {
+      const detail = event?.detail;
+      if (!detail?.claimToken || !detail?.targetIdentity || !localParticipant) return;
+      if (detail.slug && detail.slug !== slug) return;
+      publishCoordinatorTransfer(localParticipant, {
+        claimToken: detail.claimToken,
+        slug: detail.slug || slug,
+        expiresAt: detail.expiresAt || '',
+        targetIdentity: detail.targetIdentity,
+      }).catch(() => {
+        setHostError('Transfer created, but could not notify the participant in-call.');
+      });
+    }
+
+    window.addEventListener(COORDINATOR_TRANSFER_HANDOFF_EVENT, onHandoff);
+    return () => window.removeEventListener(COORDINATOR_TRANSFER_HANDOFF_EVENT, onHandoff);
+  }, [localParticipant, slug]);
+
   async function runHostAction(path, body, { confirmMessage, onSuccess } = {}) {
-    if (!isOwner || !slug) return;
+    if (!isCoordinator || !slug) return;
     if (confirmMessage && typeof window !== 'undefined' && !window.confirm(confirmMessage)) {
       return;
     }
@@ -218,12 +453,64 @@ export function RoomWorkspace({
     try {
       const result = await postOwnerAction(slug, path, body);
       if (!result.ok) {
+        if (result.payload?.code === 'OWNER_UNAUTHORIZED'
+          || result.payload?.code === 'OWNER_FORBIDDEN'
+          || result.status === 401
+          || result.status === 403) {
+          setIsCoordinator(false);
+        }
         setHostError(result.payload?.error || 'Unable to complete that action.');
         return;
       }
       onSuccess?.(result.payload);
     } catch {
       setHostError('Network error. Check your connection and try again.');
+    } finally {
+      setHostBusy('');
+    }
+  }
+
+  async function onMakeCoordinator(identity, displayLabel) {
+    if (!isCoordinator || !slug || !localParticipant) return;
+    const label = displayLabel || 'this participant';
+    if (typeof window !== 'undefined'
+      && !window.confirm(
+        `Make ${label} the coordinator? You will lose host controls after they accept.`,
+      )) {
+      return;
+    }
+
+    setHostBusy('/transfer-coordinator');
+    setHostError('');
+    setHostMessage('');
+    try {
+      const result = await postOwnerAction(slug, '/transfer-coordinator', { identity });
+      if (!result.ok) {
+        setHostError(result.payload?.error || 'Unable to transfer coordinator role.');
+        return;
+      }
+
+      await publishCoordinatorTransfer(localParticipant, {
+        claimToken: result.payload.claimToken,
+        slug,
+        expiresAt: result.payload.expiresAt || '',
+        targetIdentity: result.payload.targetIdentity || identity,
+      });
+
+      setHostMessage(`Transfer sent to ${label}. Waiting for them to accept…`);
+
+      let attempts = 0;
+      const maxAttempts = 50;
+      const poll = async () => {
+        attempts += 1;
+        await refreshCoordinatorStatus();
+        if (attempts < maxAttempts) {
+          setTimeout(poll, 2500);
+        }
+      };
+      setTimeout(poll, 2000);
+    } catch {
+      setHostError('Unable to transfer coordinator role.');
     } finally {
       setHostBusy('');
     }
@@ -267,6 +554,17 @@ export function RoomWorkspace({
         </div>
       ) : null}
 
+      {coordinatorNotice ? (
+        <div
+          className="coordinator-toast"
+          role="status"
+          aria-live="polite"
+          data-testid="coordinator-promotion-toast"
+        >
+          {coordinatorNotice}
+        </div>
+      ) : null}
+
       <div className={`meeting-content${drawerOpen ? ' with-chat' : ''}`}>
         <main className="meeting-stage" ref={focusContainerRef}>
           <div className="meeting-stage-topbar">
@@ -294,7 +592,7 @@ export function RoomWorkspace({
             onRequestFullscreen={requestFullscreen}
           />
           <FocusQualityController focusedId={focusedId} />
-          <ParticipantPresence />
+          <ParticipantPresence coordinatorIdentity={coordinatorIdentity} />
         </main>
 
         {/* Keep drawer mounted so chat history + prompt Yjs stay alive when closed */}
@@ -324,7 +622,10 @@ export function RoomWorkspace({
               <ul className="gm-people-list">
                 {participants.map((p) => {
                   const initial = (p.name || 'P')[0]?.toUpperCase() || 'P';
-                  const canRemove = isOwner && !p.isLocal;
+                  const canRemove = isCoordinator && !p.isLocal;
+                  const canTransfer = isCoordinator && !p.isLocal;
+                  const isRoleCoordinator = Boolean(coordinatorIdentity)
+                    && p.identity === coordinatorIdentity;
                   return (
                     <li key={p.identity} className="gm-people-item">
                       <div className="gm-people-info">
@@ -332,11 +633,29 @@ export function RoomWorkspace({
                         <div className="gm-people-name">
                           <span>{(p.name || '').trim() || 'Participant'}</span>
                           {p.isLocal ? <span className="you"> (You)</span> : null}
+                          {isRoleCoordinator ? (
+                            <span className="coordinator-badge" data-testid="coordinator-badge">
+                              Coordinator
+                            </span>
+                          ) : null}
                         </div>
                       </div>
                       <div className="gm-people-icons">
                         <MicIcon muted={!p.isMicrophoneEnabled} size={18} />
                         {p.isScreenShareEnabled ? <PresentIcon size={16} /> : null}
+                        {canTransfer ? (
+                          <button
+                            type="button"
+                            className="gm-people-remove"
+                            disabled={Boolean(hostBusy)}
+                            onClick={() => onMakeCoordinator(
+                              p.identity,
+                              (p.name || '').trim() || 'Participant',
+                            )}
+                          >
+                            {hostBusy === '/transfer-coordinator' ? '…' : 'Make coordinator'}
+                          </button>
+                        ) : null}
                         {canRemove ? (
                           <button
                             type="button"
@@ -357,7 +676,7 @@ export function RoomWorkspace({
                   );
                 })}
               </ul>
-              {isOwner && (hostError || hostMessage) ? (
+              {(isCoordinator) && (hostError || hostMessage) ? (
                 <p className={hostError ? 'error' : 'hint'} role={hostError ? 'alert' : 'status'} style={{ padding: '0 1rem' }}>
                   {hostError || hostMessage}
                 </p>
@@ -396,23 +715,45 @@ export function RoomWorkspace({
               <div className="gm-info-block">
                 <h4>Joining info</h4>
                 <p className="hint">
-                  Room code: <code>{slug}</code>
+                  Meeting ID: <code>{slug}</code>
                 </p>
-                <button
-                  type="button"
-                  onClick={copyMeetingCode}
-                  className="gm-btn-primary gm-info-copy"
-                >
-                  {copiedCode ? 'Code copied!' : 'Copy room code'}
-                </button>
+                <p className="hint gm-info-note">
+                  The meeting ID is for reference only. Joining requires the invitation link and access code.
+                </p>
+                <p className="hint gm-info-note">
+                  Invitation link + access code are required to join.
+                </p>
+                <div className="gm-info-actions">
+                  <button
+                    type="button"
+                    onClick={copyMeetingCode}
+                    className="gm-btn-primary gm-info-copy"
+                    data-testid="copy-meeting-id"
+                  >
+                    {copiedCode ? 'Meeting ID copied!' : 'Copy meeting ID'}
+                  </button>
+                  {isCoordinator ? (
+                    <button
+                      type="button"
+                      onClick={copyInviteLink}
+                      className="gm-btn-primary gm-info-copy"
+                      data-testid="copy-invite-link"
+                    >
+                      Copy invite link
+                    </button>
+                  ) : null}
+                </div>
+                {copiedInvite ? (
+                  <p className="hint" role="status" data-testid="invite-link-feedback">{copiedInvite}</p>
+                ) : null}
                 <p className="hint gm-info-note">
                   Access codes are kept separate from links for security.
                 </p>
               </div>
 
-              {isOwner ? (
-                <div className="gm-info-block gm-host-controls" aria-label="Host controls">
-                  <h4>Host controls</h4>
+              {isCoordinator ? (
+                <div className="gm-info-block gm-host-controls" aria-label="Coordinator controls">
+                  <h4>Coordinator controls</h4>
                   {hostError ? <p className="error" role="alert">{hostError}</p> : null}
                   {hostMessage ? <p className="hint" role="status">{hostMessage}</p> : null}
 
@@ -491,7 +832,7 @@ export function RoomWorkspace({
             }}
             role="button"
             tabIndex={0}
-            title="Click to copy meeting code"
+            title="Click to copy meeting ID (reference only)"
           >
             <span>{slug}</span>
             {copiedCode ? <span className="gm-copied">Copied</span> : null}
@@ -570,7 +911,7 @@ export function RoomWorkspace({
                 >
                   <ActivitiesIcon size={16} /> Shared prompt
                 </button>
-                {isOwner ? (
+                {isCoordinator ? (
                   <button
                     type="button"
                     role="menuitem"
@@ -580,7 +921,7 @@ export function RoomWorkspace({
                       toggleTab('info');
                     }}
                   >
-                    Host controls
+                    Coordinator controls
                   </button>
                 ) : null}
               </div>

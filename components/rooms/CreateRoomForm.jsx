@@ -4,7 +4,8 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { saveOwnerJoinHandoff } from '@/lib/rooms/owner-join-handoff.js';
 
-export default function CreateRoomForm() {
+export default function CreateRoomForm({ teamMembers = [] }) {
+  const [permanent, setPermanent] = useState(false);
   const [title, setTitle] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [accessCode, setAccessCode] = useState('');
@@ -33,7 +34,9 @@ export default function CreateRoomForm() {
         title,
         accessCode,
       };
-      if (expiresAt) {
+      if (permanent) {
+        body.permanent = true;
+      } else if (expiresAt) {
         body.expiresAt = new Date(expiresAt).toISOString();
       }
 
@@ -80,17 +83,32 @@ export default function CreateRoomForm() {
       {!result && (
         <form onSubmit={onSubmit} className="create-room-form">
           <div className="gm-input-field">
-            <label htmlFor="create-display-name">Display name</label>
-            <input
-              id="create-display-name"
-              name="displayName"
-              placeholder="How you'll appear in the meeting"
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-              required
-              maxLength={40}
-              autoComplete="nickname"
-            />
+            <label htmlFor="create-display-name">{teamMembers.length ? 'Your name' : 'Display name'}</label>
+            {teamMembers.length ? (
+              <select
+                id="create-display-name"
+                name="displayName"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                required
+              >
+                <option value="" disabled>Select your name</option>
+                {teamMembers.map((member) => (
+                  <option key={member} value={member}>{member}</option>
+                ))}
+              </select>
+            ) : (
+              <input
+                id="create-display-name"
+                name="displayName"
+                placeholder="How you'll appear in the meeting"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                required
+                maxLength={40}
+                autoComplete="nickname"
+              />
+            )}
           </div>
 
           <div className="gm-input-field">
@@ -131,11 +149,23 @@ export default function CreateRoomForm() {
               type="datetime-local"
               value={expiresAt}
               onChange={(e) => setExpiresAt(e.target.value)}
+              disabled={permanent}
             />
           </div>
 
+          <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <input
+              type="checkbox"
+              name="permanent"
+              checked={permanent}
+              onChange={(e) => setPermanent(e.target.checked)}
+              style={{ width: 'auto' }}
+            />
+            Permanent team room (never expires; the invitation link has no use limit)
+          </label>
+
           <p className="hint">
-            Your display name and access code are kept for this browser tab, so joining as the host does not ask for them again. The access code is never placed in the URL. Share the code separately with your team.
+            Your display name and access code are kept for this browser tab, so joining as the coordinator does not ask for them again. The access code is never placed in the URL. Share the code separately with your team.
           </p>
 
           <button type="submit" disabled={busy}>
@@ -183,7 +213,7 @@ export default function CreateRoomForm() {
 
           {copyStatus && <p role="status" className="hint" style={{ color: 'var(--gm-green)' }}>{copyStatus}</p>}
           <p className="hint" style={{ marginTop: '0.5rem' }}>
-            Join meeting now signs you in as {displayName || 'the host'} with the access code you just entered. Send the invitation link and the access code to other people. They still enter both when they join.
+            Join meeting now signs you in as {displayName || 'the coordinator'} with the access code you just entered. Send the invitation link and the access code to other people. They still enter both when they join.
           </p>
         </div>
       )}

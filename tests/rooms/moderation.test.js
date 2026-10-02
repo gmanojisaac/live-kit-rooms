@@ -34,6 +34,16 @@ import {
 
 import {
 
+  transferCoordinator,
+
+  claimCoordinator,
+
+} from '../../lib/rooms/coordinator-transfer.js';
+
+import { verifyOwnerSession } from '../../lib/security/owner-session.js';
+
+import {
+
   getPromptWorkspace,
 
   putPromptDraft,
@@ -985,6 +995,314 @@ test('audit events omit secrets across moderation actions', async (t) => {
   assert.match(blob, /invitation_revoked/);
 
   assert.match(blob, /room_ended/);
+
+});
+
+
+
+test('coordinator transfer claim updates owner and issues new session', async (t) => {
+
+  const { result, repository, ownerId } = await seedOwnedRoom(t);
+
+  const room = await repository.getRoomBySlug(result.room.slug);
+
+  const livekit = createMockLiveKit({
+
+    participants: [{ identity: 'assignee-1', name: 'Alex' }],
+
+  });
+
+
+
+  const initiated = await transferCoordinator({
+
+    room,
+
+    ownerId,
+
+    participantIdentity: 'assignee-1',
+
+    repository,
+
+    livekitRooms: livekit,
+
+  });
+
+
+
+  assert.ok(initiated.claimToken);
+
+  assert.equal(initiated.targetIdentity, 'assignee-1');
+
+  assert.equal((await repository.getRoomBySlug(result.room.slug)).owner_id, ownerId);
+
+
+
+  const claimed = await claimCoordinator({
+
+    roomSlug: result.room.slug,
+
+    claimToken: initiated.claimToken,
+
+    participantIdentity: 'assignee-1',
+
+    repository,
+
+    policy: testPolicy(),
+
+  });
+
+
+
+  assert.equal(claimed.ownerId, initiated.newOwnerId);
+
+  assert.ok(claimed.sessionCookie?.value);
+
+  assert.equal(
+
+    (await repository.getRoomBySlug(result.room.slug)).owner_id,
+
+    initiated.newOwnerId,
+
+  );
+
+
+
+  const session = verifyOwnerSession(claimed.sessionCookie.value, SESSION_SECRET);
+
+  assert.equal(session?.ownerId, initiated.newOwnerId);
+
+
+
+  await assert.rejects(
+
+    () => requireRoomOwner(fakeRequest(
+
+      createOwnerSession(SESSION_SECRET, { ownerId }).token,
+
+    ), result.room.slug, {
+
+      repository,
+
+      policy: testPolicy(),
+
+    }),
+
+    (error) => error instanceof OwnerAuthError && error.code === 'OWNER_FORBIDDEN',
+
+  );
+
+
+
+  const auth = await requireRoomOwner(
+
+    fakeRequest(claimed.sessionCookie.value),
+
+    result.room.slug,
+
+    { repository, policy: testPolicy() },
+
+  );
+
+  assert.equal(auth.ownerId, initiated.newOwnerId);
+
+
+
+  const audits = await repository.listAuditEvents(room.id);
+
+  assert.ok(audits.some((a) => a.event_type === AUDIT_EVENT.COORDINATOR_TRANSFER_INITIATED));
+
+  assert.ok(audits.some((a) => a.event_type === AUDIT_EVENT.COORDINATOR_TRANSFER_CLAIMED));
+
+  assert.equal(JSON.stringify(audits).includes(initiated.claimToken), false);
+
+});
+
+
+
+test('coordinator transfer rejects missing LiveKit participant', async (t) => {
+
+  const { result, repository, ownerId } = await seedOwnedRoom(t);
+
+  const room = await repository.getRoomBySlug(result.room.slug);
+
+  const livekit = createMockLiveKit({ participants: [] });
+
+
+
+  await assert.rejects(
+
+    () => transferCoordinator({
+
+      room,
+
+      ownerId,
+
+      participantIdentity: 'missing-user',
+
+      repository,
+
+      livekitRooms: livekit,
+
+    }),
+
+    (error) => error instanceof ModerationError && error.code === 'PARTICIPANT_NOT_FOUND',
+
+  );
+
+});
+
+
+
+test('coordinator claim rejects wrong identity, expiry, and reuse', async (t) => {
+
+  let clock = Date.now();
+
+  const { result, repository, ownerId } = await seedOwnedRoom(t, {
+
+    now: () => clock,
+
+  });
+
+  const room = await repository.getRoomBySlug(result.room.slug);
+
+  const livekit = createMockLiveKit({
+
+    participants: [{ identity: 'assignee-1', name: 'Alex' }],
+
+  });
+
+
+
+  const initiated = await transferCoordinator({
+
+    room,
+
+    ownerId,
+
+    participantIdentity: 'assignee-1',
+
+    repository,
+
+    livekitRooms: livekit,
+
+    now: () => clock,
+
+    ttlMs: 60_000,
+
+  });
+
+
+
+  await assert.rejects(
+
+    () => claimCoordinator({
+
+      roomSlug: result.room.slug,
+
+      claimToken: initiated.claimToken,
+
+      participantIdentity: 'someone-else',
+
+      repository,
+
+      policy: testPolicy(),
+
+      now: () => clock,
+
+    }),
+
+    (error) => error instanceof ModerationError && error.code === 'TRANSFER_IDENTITY_MISMATCH',
+
+  );
+
+
+
+  clock += 120_000;
+
+  await assert.rejects(
+
+    () => claimCoordinator({
+
+      roomSlug: result.room.slug,
+
+      claimToken: initiated.claimToken,
+
+      participantIdentity: 'assignee-1',
+
+      repository,
+
+      policy: testPolicy(),
+
+      now: () => clock,
+
+    }),
+
+    (error) => error instanceof ModerationError && error.code === 'TRANSFER_EXPIRED',
+
+  );
+
+
+
+  clock = Date.now();
+
+  const second = await transferCoordinator({
+
+    room: await repository.getRoomBySlug(result.room.slug),
+
+    ownerId,
+
+    participantIdentity: 'assignee-1',
+
+    repository,
+
+    livekitRooms: livekit,
+
+    now: () => clock,
+
+  });
+
+
+
+  await claimCoordinator({
+
+    roomSlug: result.room.slug,
+
+    claimToken: second.claimToken,
+
+    participantIdentity: 'assignee-1',
+
+    repository,
+
+    policy: testPolicy(),
+
+    now: () => clock,
+
+  });
+
+
+
+  await assert.rejects(
+
+    () => claimCoordinator({
+
+      roomSlug: result.room.slug,
+
+      claimToken: second.claimToken,
+
+      participantIdentity: 'assignee-1',
+
+      repository,
+
+      policy: testPolicy(),
+
+      now: () => clock,
+
+    }),
+
+    (error) => error instanceof ModerationError && error.code === 'TRANSFER_INVALID',
+
+  );
 
 });
 

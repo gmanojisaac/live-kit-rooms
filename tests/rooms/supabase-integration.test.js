@@ -194,6 +194,7 @@ test('supabase-backed join issues JWT and consumes invite atomically', async (t)
   assert.ok(admitted.token);
   assert.equal(admitted.livekitUrl, livekitCredentials.url);
   assert.equal(admitted.room.maxParticipants, 6);
+  assert.ok(admitted.participant.rejoinToken);
   assert.notEqual(admitted.participant.identity, 'Integration Guest');
 
   const claims = await verifyParticipantAccessToken(admitted.token, livekitCredentials);

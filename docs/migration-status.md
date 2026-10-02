@@ -34,7 +34,7 @@ Next.js + LiveKit Cloud + Supabase + Vercel + Yjs (LiveKit Data Channels)
 | Invitation model | DONE | Token + SHA-256 hash |
 | Owner session | DONE | HTTP-only signed cookie |
 | Access-code hashing | DONE | scrypt |
-| Join + LiveKit JWT | DONE | `POST /api/rooms/[slug]/join` |
+| Join + LiveKit JWT | DONE | `POST /api/rooms/[slug]/join` + participant rejoin grants (2026-09-25) |
 | Owner moderation | DONE | lock / remove / revoke / end |
 | Media migration (MED-01…08) | DONE IN CODE | Next.js `/room/[slug]` LiveKit workspace |
 | **Yjs / prompt CRDT (COL-01…06)** | **DONE IN CODE** | LiveKit Data Channels transport |
@@ -93,10 +93,22 @@ Apply (in order) on each Supabase environment:
 3. `20260922000000_phase2_room_access_constraints.sql`
 4. `20260922010000_auth05_prompt_lock_and_consume.sql`
 5. `20260922020000_phase4_prompt_yjs_state.sql` — optional `yjs_state` for CRDT restore
+6. `20260923120000_coordinator_transfer.sql`
+7. `20260925103000_participant_rejoin_grants.sql`
+8. `20261002090000_prompt_runs_work_log.sql` — `prompt_runs` table + `live-kit` storage bucket
 
-## Unresolved product decision — JPEG / run history
+## Team work log (2026-10-02)
 
-Unchanged: management plan says screen content/screenshots are not stored, while earlier product conversation requested JPEG result storage. **Do not silently choose.** Phase 4 introduces **no** screenshot storage.
+Product decision: user-uploaded JPEGs **are** stored (this resolves the earlier JPEG / run-history question). Screen shares themselves are still never recorded.
+
+| Item | Behaviour |
+| --- | --- |
+| Team roster | `TEAM_MEMBERS=Name1,Name2,Name3` — create/join screens show a name picker; the server rejects other names. Attribution only, not authentication. |
+| Permanent room | "Permanent team room" on `/create` → `expires_at = null`, invitation with no expiry and no use limit. |
+| Work log | `prompt_runs` rows (`run` = result of a finalized prompt version, `progress` = standalone upload); JPEG bytes in the `live-kit` storage bucket, served only via `/api/rooms/[slug]/runs/[runId]/image`. |
+| History | In the Shared Prompt panel: pick a person to see the prompt versions and images they saved. Visible to everyone in the room. |
+
+Known limits: run/prompt APIs are reachable by anyone who knows the room slug (unchanged); the coordinator cookie lasts 12 hours, so a permanent room has no coordinator after that; JPEG uploads are sent as base64 JSON, so Vercel's ~4.5 MB request limit caps files at roughly 3 MB there.
 
 ## Future phases (out of Phase 4 scope)
 
